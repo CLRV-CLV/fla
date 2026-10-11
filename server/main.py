@@ -9,7 +9,7 @@ from fastapi.staticfiles import StaticFiles
 
 from . import converter, db, security
 from .deps import user_public
-from .routers import (admin, admin_extra, ai, announcements, auth, chat, desktop, files, mobile, remote, social,
+from .routers import (zhixue, admin, admin_extra, ai, announcements, auth, chat, desktop, files, mobile, remote, social,
                       stats, tools, users)
 
 app = FastAPI(title="FLA", docs_url=None, redoc_url=None)
@@ -48,6 +48,7 @@ app.include_router(admin_extra.router)     # v3.6: 用户组 / 批量假用户 /
 app.include_router(ai.router)              # v3.6: AI 对话 / 写作辅助 / AI 论坛
 app.include_router(ai.admin_router)        # v3.6: AI 渠道与模型管理
 app.include_router(stats.router)           # v3.6: 首页实时数据
+app.include_router(zhixue.router)         # v3.7: 智学网数据接口 (管理员)
 
 
 def _ensure_admin():

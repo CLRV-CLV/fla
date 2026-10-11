@@ -17,6 +17,14 @@ async function loadModels(force) {
 
 /* Markdown 渲染 (先整体转义再解析, 防 XSS): 标题 / 列表 / 引用 / 表格 / 代码块 / 行内代码 / 粗斜体 / 删除线 / 链接 / 分割线
    流式输出时未闭合的代码块会一直渲染为代码, 直到收到结束标记 */
+/* 联网搜索来源 (只在本次回答时显示; 历史消息不保存来源) */
+function sourcesHtml(list) {
+  if (!list || !list.length) return '';
+  const esc = (t) => String(t || '').replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  return '<div class="ai-src"><b>🔎 来源</b><br>' + list.map((x, i) =>
+    '<a href="' + esc(x.url) + '" target="_blank" rel="noopener noreferrer">[' + (i + 1) + '] ' + esc(x.title) + '</a>').join('<br>') + '</div>';
+}
+
 function mdInline(s) {
   const codes = [];
   s = s.replace(/`([^`\n]+)`/g, (_, c) => { codes.push(c); return '\u0000' + (codes.length - 1) + '\u0000'; });
@@ -296,9 +304,10 @@ async function send(regen) {
         let ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { continue; }
         if (ev.error) { errored = true; pending.content += (pending.content ? '\n\n' : '') + '⚠ ' + ev.error; }
         if (ev.delta) pending.content += ev.delta;
+        if (ev.sources) pending.sources = ev.sources;
         if (ev.done && ev.message_id) pending.id = ev.message_id;
         const b = bubble();
-        if (b) { b.innerHTML = md(pending.content); if (ev.error) b.classList.add('err'); box.scrollTop = box.scrollHeight; }
+        if (b) { b.innerHTML = md(pending.content) + sourcesHtml(pending.sources); if (ev.error) b.classList.add('err'); box.scrollTop = box.scrollHeight; }
       }
     }
   } catch (e) {

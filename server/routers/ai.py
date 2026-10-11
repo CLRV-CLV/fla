@@ -14,7 +14,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from .. import db
+from .. import db, web_search
 from ..deps import require_admin, require_user
 from ..security import hash_password
 
@@ -239,6 +239,7 @@ class MsgIn(BaseModel):
     content: str = ""
     model_id: int | None = None
     regenerate: bool = False
+    web_search: bool | None = None     # None = 跟随管理员设置 (ai_web_search)
 
 
 @router.post("/conversations/{cid}/messages")
@@ -277,10 +278,22 @@ def send_message(cid: int, body: MsgIn, request: Request):
     if len(messages) < 2:
         raise HTTPException(400, "没有可回复的内容")
 
+    # 联网搜索: 用最近一条用户提问检索, 结果作为参考资料注入
+    use_search = body.web_search if body.web_search is not None else (db.get_setting("ai_web_search", "1") == "1")
+    sources = []
+    if use_search:
+        last_user = next((r["content"] for r in reversed(hist) if r["role"] == "user"), "")
+        sources = web_search.search(last_user)
+        ctx = web_search.as_context(sources)
+        if ctx:
+            messages.insert(1, {"role": "system", "content": ctx})
+
     def gen():
         buf = []
         # 先发一段注释填充(SSE 注释会被客户端忽略), 冲破代理/网关的缓冲, 让首字立即出现
         yield ": " + " " * 2048 + "\n\n"
+        if sources:
+            yield _sse({"sources": sources})
         try:
             resp = _call(m["channel_id"], m["base_url"], m["api_keys"], "/chat/completions",
                          {"model": m["model"], "messages": messages, "stream": True}, timeout=120)

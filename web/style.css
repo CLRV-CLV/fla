@@ -3247,3 +3247,7 @@ body.present-body { background: #000000; }
 .batch-bar { width: max-content; max-width: calc(100vw - 24px); box-sizing: border-box; }
 .batch-count { white-space: nowrap; }
 .btn { white-space: nowrap; }
+
+/* AI 联网搜索来源 */
+.ai-src { margin-top: 10px; padding-top: 8px; border-top: 1px dashed rgba(0,0,0,.12); font-size: 12.5px; line-height: 1.7; }
+.ai-src a { color: inherit; opacity: .85; text-decoration: underline; word-break: break-all; }

@@ -14,7 +14,7 @@ import urllib.request
 
 from PyQt5.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QSizeGrip, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (BodyLabel, CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel,
                             TransparentToolButton)
@@ -67,19 +67,33 @@ class _Sig(QObject):
 
 
 class PhoneView(QWidget):
-    """全屏显示手机画面 (位于批注画布之下)"""
+    """置顶、可拖动缩放的手机画面浮窗; 隐藏画面不会中断投屏。"""
+
+    changed = pyqtSignal()
+    HEADER_H = 46
 
     def __init__(self, on_close):
         super().__init__()
         self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+        self.setMinimumSize(360, 240)
+        self.setMaximumSize(1600, 1100)
         self.pix = None
         self.on_close = on_close
+        from .stage import Grip
+        self.grip = Grip(self, self)
+        self.grip.setToolTip("按住移动手机画面")
+        self.title = CaptionLabel("手机画面 · 投屏进行中", self)
+        self.title.setStyleSheet("color:#f8fafc;font-weight:600;")
+        self.min_btn = TransparentToolButton(FIF.MINIMIZE, self)
+        self.min_btn.setToolTip("最小化手机画面（投屏继续，可从投屏控制条重新打开）")
+        self.min_btn.clicked.connect(self.hide)
         self.btn = TransparentToolButton(FIF.CLOSE, self)
-        self.btn.setFixedSize(44, 44)
-        self.btn.setToolTip("关闭手机画面")
+        self.btn.setToolTip("关闭手机画面（不会结束投屏）")
         self.btn.clicked.connect(on_close)
         self.tip = CaptionLabel("等待手机画面…", self)
         self.tip.setStyleSheet("color:#bbb;")
+        self.size_grip = QSizeGrip(self)
+        self._placed = False
 
     def set_frame(self, data: bytes):
         img = QImage.fromData(data, "JPG")
@@ -89,81 +103,166 @@ class PhoneView(QWidget):
             self.update()
 
     def popup(self):
-        self.setGeometry(_screen_rect())
-        self.btn.move(self.width() - 60, 16)
-        self.tip.move(self.width() // 2 - 60, self.height() // 2)
+        if not self._placed:
+            r = _screen_rect()
+            w = min(840, max(360, int(r.width() * 0.72)))
+            h = min(560, max(240, int(r.height() * 0.66)))
+            self.resize(w, h)
+            self.move(r.x() + (r.width() - w) // 2, r.y() + (r.height() - h) // 2)
+            self._placed = True
+        self._layout_controls()
         self.show()
+        self.raise_()
+        self.changed.emit()
+
+    def _layout_controls(self):
+        self.grip.setGeometry(4, 3, 26, self.HEADER_H - 6)
+        self.title.setGeometry(34, 0, max(100, self.width() - 170), self.HEADER_H)
+        self.btn.setGeometry(self.width() - 48, 1, 42, self.HEADER_H - 2)
+        self.min_btn.setGeometry(self.width() - 92, 1, 42, self.HEADER_H - 2)
+        self.tip.adjustSize()
+        self.tip.move(max(8, (self.width() - self.tip.width()) // 2),
+                      self.HEADER_H + max(8, (self.height() - self.HEADER_H - self.tip.height()) // 2))
+        self.size_grip.setGeometry(self.width() - 18, self.height() - 18, 18, 18)
+
+    def moveEvent(self, e):
+        self.changed.emit()
+
+    def resizeEvent(self, e):
+        self._layout_controls()
+        self.changed.emit()
+
+    def showEvent(self, e):
+        self.changed.emit()
+
+    def hideEvent(self, e):
+        self.changed.emit()
 
     def paintEvent(self, e):
         p = QPainter(self)
         p.fillRect(self.rect(), QColor("#111111"))
+        p.fillRect(0, 0, self.width(), self.HEADER_H, QColor(24, 24, 27, 238))
         if self.pix:
-            s = self.pix.size().scaled(self.size(), Qt.KeepAspectRatio)
-            x, y = (self.width() - s.width()) // 2, (self.height() - s.height()) // 2
+            area_w, area_h = self.width(), max(1, self.height() - self.HEADER_H)
+            s = self.pix.size().scaled(area_w, area_h, Qt.KeepAspectRatio)
+            x = (self.width() - s.width()) // 2
+            y = self.HEADER_H + (area_h - s.height()) // 2
             p.setRenderHint(QPainter.SmoothPixmapTransform)
             p.drawPixmap(x, y, s.width(), s.height(), self.pix)
 
 
 class CastPanel(_Card):
+    """可移动/缩放的投屏主面板; 最小化后由独立悬浮控制条接管。"""
+
     def __init__(self, ctl):
         super().__init__(16)
         self.ctl = ctl
+        self._placed = False
+        self.setMinimumSize(350, 470)
+        self.setMaximumSize(560, 820)
         lay = QVBoxLayout(self)
-        lay.setContentsMargins(20, 14, 20, 18)
+        lay.setContentsMargins(16, 10, 10, 12)
         lay.setSpacing(8)
-        lay.setSizeConstraint(QVBoxLayout.SetFixedSize)
         top = QHBoxLayout()
+        from .stage import Grip
+        grip = Grip(self, self)
+        grip.setFixedSize(20, 30)
+        grip.setToolTip("按住移动投屏窗口")
+        top.addWidget(grip)
         top.addWidget(SubtitleLabel("手机投屏 / 观看"))
         top.addStretch(1)
-        x = TransparentToolButton(FIF.CLOSE, self)
-        x.setToolTip("隐藏面板（投屏继续）")
-        x.clicked.connect(self.hide)
-        top.addWidget(x)
+        mini = TransparentToolButton(FIF.MINIMIZE, self)
+        mini.setToolTip("最小化到悬浮控制条（投屏继续）")
+        mini.clicked.connect(ctl.minimize_panel)
+        top.addWidget(mini)
         lay.addLayout(top)
+
+        self.body = QWidget(self)
+        body = QVBoxLayout(self.body)
+        body.setContentsMargins(4, 0, 4, 0)
+        body.setSpacing(8)
         from qfluentwidgets import SegmentedWidget
-        self.seg = SegmentedWidget(self)
+        self.seg = SegmentedWidget(self.body)
         self.seg.addItem("lan", "同一 Wi-Fi（极速）", lambda: ctl.set_qr_mode("lan"))
         self.seg.addItem("net", "任意网络", lambda: ctl.set_qr_mode("net"))
         self.seg.setCurrentItem("net")
-        self.seg.setFixedWidth(300)
-        lay.addWidget(self.seg, 0, Qt.AlignHCenter)
+        body.addWidget(self.seg, 0, Qt.AlignHCenter)
         self.qr = QLabel("正在创建会话…")
         self.qr.setFixedSize(240, 240)
         self.qr.setAlignment(Qt.AlignCenter)
         self.qr.setStyleSheet("background:#f5f5f5;border-radius:8px;")
-        lay.addWidget(self.qr, 0, Qt.AlignHCenter)
-        lay.addSpacing(6)
+        body.addWidget(self.qr, 0, Qt.AlignHCenter)
         self.code = QLabel("配对码 ----")
         self.code.setAlignment(Qt.AlignCenter)
         self.code.setStyleSheet("font-size:20px;font-weight:600;color:#111;")
         self.code.setFixedHeight(32)
-        lay.addWidget(self.code)
+        body.addWidget(self.code)
         hint = BodyLabel("① 手机看电脑：扫码后手机实时显示电脑桌面/PPT，在手机上画，电脑桌面同步出现笔迹\n"
                          "② 手机投到电脑：安卓装「FLA 手机端」App 可整屏投屏（PPT/相册/任何 App）；\n"
                          "    iPhone/鸿蒙用网页版投摄像头/照片")
         hint.setWordWrap(True)
-        lay.addWidget(hint)
+        body.addWidget(hint)
         self.state = CaptionLabel("")
-        lay.addWidget(self.state)
+        body.addWidget(self.state)
         row = QHBoxLayout()
-        self.stop_btn = PushButton(FIF.CLOSE, "结束投屏")
-        self.stop_btn.clicked.connect(ctl.stop)
         self.view_btn = PrimaryPushButton(FIF.PHONE, "显示手机画面")
         self.view_btn.clicked.connect(ctl.show_phone)
+        self.stop_btn = PushButton(FIF.CLOSE, "结束投屏")
+        self.stop_btn.clicked.connect(ctl.stop)
         row.addWidget(self.view_btn)
         row.addWidget(self.stop_btn)
-        lay.addLayout(row)
+        body.addLayout(row)
         self.apk = CaptionLabel("手机端 App 下载：网站首页 → 手机端中心（App 内可直接扫上方二维码连接）")
         self.apk.setWordWrap(True)
-        self.apk.setFixedWidth(300)
-        lay.addWidget(self.apk)
-        hint.setFixedWidth(300)
+        body.addWidget(self.apk)
+        lay.addWidget(self.body, 1)
+        grip_row = QHBoxLayout()
+        grip_row.addStretch(1)
+        grip_row.addWidget(QSizeGrip(self))
+        lay.addLayout(grip_row)
+
+    def popup(self):
+        r = _screen_rect()
+        if not self._placed:
+            self.adjustSize()
+            self.move(r.right() - self.width() - 24, r.top() + 60)
+            self._placed = True
+        self.show()
+        self.raise_()
+
+
+class CastMiniBar(_Card):
+    """始终可见的悬浮状态条: 展示手机画面时也能展开控制或结束投屏。"""
+
+    def __init__(self, ctl):
+        super().__init__(18)
+        self.ctl = ctl
+        self._placed = False
+        self.setMinimumSize(270, 48)
+        lay = QHBoxLayout(self)
+        lay.setContentsMargins(6, 5, 8, 5)
+        from .stage import Grip
+        grip = Grip(self, self)
+        grip.setFixedSize(20, 36)
+        grip.setToolTip("按住移动投屏控制条")
+        lay.addWidget(grip)
+        self.status = CaptionLabel("投屏进行中")
+        lay.addWidget(self.status, 1)
+        expand = TransparentToolButton(FIF.PHONE, self)
+        expand.setToolTip("展开投屏控制")
+        expand.clicked.connect(ctl.expand_panel)
+        lay.addWidget(expand)
+        stop = TransparentToolButton(FIF.CLOSE, self)
+        stop.setToolTip("结束投屏")
+        stop.clicked.connect(ctl.stop)
+        lay.addWidget(stop)
         self.adjustSize()
 
     def popup(self):
         r = _screen_rect()
-        self.adjustSize()
-        self.move(r.right() - self.width() - 24, r.top() + 60)
+        if not self._placed:
+            self.move(r.right() - self.width() - 24, r.top() + 16)
+            self._placed = True
         self.show()
         self.raise_()
 
@@ -183,8 +282,12 @@ class CastController(QObject):
         self.changed_at = 0.0
         self.hq_hash = None
         self.panel = CastPanel(self)
+        self.mini_bar = CastMiniBar(self)
         self.phone_view = PhoneView(self.hide_phone)
+        stage.add_floating(self.phone_view)
         stage.add_floating(self.panel)
+        stage.add_floating(self.mini_bar)
+        self.raise_timer = QTimer(self, interval=350, timeout=self._keep_controls_on_top)
         self.sig.event.connect(self._on_event)
         self.sig.created.connect(self._on_created)
         self.sig.qr.connect(self._on_qr)
@@ -204,9 +307,36 @@ class CastController(QObject):
         if not self.active:
             self.start()
         elif self.panel.isVisible():
-            self.panel.hide()
+            self.minimize_panel()
         else:
-            self.panel.popup()
+            self.expand_panel()
+
+    def minimize_panel(self):
+        if not self.active:
+            return
+        self.panel.hide()
+        self.mini_bar.popup()
+        self._keep_controls_on_top()
+
+    def expand_panel(self):
+        if not self.active:
+            return
+        self.mini_bar.hide()
+        self.panel.popup()
+        self._keep_controls_on_top()
+
+    def _keep_controls_on_top(self):
+        if not self.active:
+            return
+        if not self.panel.isVisible() and not self.mini_bar.isVisible():
+            self.mini_bar.popup()
+        if self.phone_view.isVisible():
+            self.phone_view.raise_()
+        if self.panel.isVisible():
+            self.panel.raise_()
+        if self.mini_bar.isVisible():
+            self.mini_bar.raise_()
+        self.stage.refresh_holes()
 
     def start(self):
         self.active = True
@@ -215,7 +345,10 @@ class CastController(QObject):
         self.panel.qr.setText("正在创建会话…")
         self.panel.code.setText("配对码 ----")
         self.panel.state.setText("")
+        self.mini_bar.hide()
         self.panel.popup()
+        self.raise_timer.start()
+        self._keep_controls_on_top()
 
         def work():
             try:
@@ -235,7 +368,9 @@ class CastController(QObject):
             self.panel.qr.setText("创建失败\n请检查网络/服务器")
             self.panel.state.setText(str(d.get("error") or d.get("detail") or ""))
             self.active = False
-            [d.phone_btn.setChecked(False) for d in (self.stage.desk_dock, self.stage.ppt_dock)]
+            self.raise_timer.stop()
+            self.mini_bar.hide()
+            [dock.phone_btn.setChecked(False) for dock in (self.stage.desk_dock, self.stage.ppt_dock)]
             return
         self.sid, self.code = d["session_id"], d["code"]
         self.panel.code.setText(f"配对码 {self.code}")
@@ -271,7 +406,6 @@ class CastController(QObject):
             self.net_qr = pm.scaled(230, 230, Qt.KeepAspectRatio, Qt.SmoothTransformation)
             if self.qr_mode == "net":
                 self.panel.qr.setPixmap(self.net_qr)
-            self.panel.adjustSize()
 
     def set_qr_mode(self, mode):
         self.qr_mode = mode
@@ -291,9 +425,11 @@ class CastController(QObject):
         self.active = False
         self.gen += 1
         self.grab_timer.stop()
+        self.raise_timer.stop()
         self.link.stop()
         self.panel.seg.setEnabled(True)
         self.panel.hide()
+        self.mini_bar.hide()
         self.hide_phone()
         [d.phone_btn.setChecked(False) for d in (self.stage.desk_dock, self.stage.ppt_dock)]
         sid = self.sid
@@ -466,15 +602,9 @@ class CastController(QObject):
 
     def show_phone(self):
         self.phone_view.popup()
-        ov = self.stage.ov
-        if ov.isVisible():
-            ov.raise_()
-        self.stage.refresh_holes()
-        for w in self.stage.floating:
-            if w.isVisible():
-                w.raise_()
         if not self.stage.dock.isVisible() and not self.stage.dock.mini.isVisible():
             self.stage.start()
+        self._keep_controls_on_top()
 
     def open_mirror(self):
         """Windows 自带 Miracast 接收端: 安卓/华为/小米等手机的「无线投屏」可直接把整屏投到本机"""

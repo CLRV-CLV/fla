@@ -25,10 +25,74 @@ IS_WIN = sys.platform == "win32"
 
 # ------------------------------------------------------------------ 配置
 def data_dir() -> str:
+    """只存轻量配置与批注; 大文件缓存/课件另行保存到可配置的非系统盘目录。"""
     base = os.environ.get("LOCALAPPDATA") or os.path.join(os.path.expanduser("~"), ".local", "share")
     d = os.path.join(base, "FLA")
     os.makedirs(d, exist_ok=True)
     return d
+
+
+def _probe_writable(path: str) -> bool:
+    """确认目录可写, 避免把默认存储选到光驱或只读分区。"""
+    try:
+        os.makedirs(path, exist_ok=True)
+        fd, name = tempfile.mkstemp(prefix=".fla-write-test-", dir=path)
+        os.close(fd)
+        os.unlink(name)
+        return True
+    except OSError:
+        return False
+
+
+def default_storage_dirs() -> tuple[str, str]:
+    """Windows 优先选择可写的非系统盘；若没有其他盘则落在用户文档目录，可随时修改。"""
+    if IS_WIN:
+        system_drive = os.path.splitdrive(os.environ.get("SystemDrive", "C:"))[0].upper()
+        for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+            drive = letter + ":"
+            if drive.upper() == system_drive or not os.path.isdir(drive + "\\"):
+                continue
+            root = os.path.join(drive + "\\", "FLA")
+            if _probe_writable(root):
+                return os.path.join(root, "Cache"), os.path.join(root, "Courseware")
+        root = os.path.join(os.path.expanduser("~"), "Documents", "FLA")
+        return os.path.join(root, "Cache"), os.path.join(root, "Courseware")
+    root = os.path.join(os.environ.get("XDG_CACHE_HOME") or os.path.join(os.path.expanduser("~"), ".cache"), "FLA")
+    return os.path.join(root, "cache"), os.path.join(root, "courseware")
+
+
+def _clean_storage_dir(path: str) -> str:
+    path = os.path.expandvars(os.path.expanduser((path or "").strip()))
+    return os.path.abspath(path) if path else ""
+
+
+def storage_location(kind: str) -> str:
+    if kind not in ("cache", "download"):
+        raise ValueError("未知存储类型")
+    value = cfg.cache_dir if kind == "cache" else cfg.download_dir
+    path = _clean_storage_dir(value)
+    if not path:
+        raise RuntimeError("尚未设置非系统盘存储位置，请先在「设置 → 存储位置」中选择目录。")
+    os.makedirs(path, exist_ok=True)
+    if not _probe_writable(path):
+        raise RuntimeError("存储目录不可写，请在「设置 → 存储位置」中选择可写目录。")
+    return path
+
+
+def set_storage_dir(kind: str, path: str) -> str:
+    if kind not in ("cache", "download"):
+        raise ValueError("未知存储类型")
+    clean = _clean_storage_dir(path)
+    if not clean:
+        raise ValueError("请选择有效的存储目录。")
+    if not _probe_writable(clean):
+        raise ValueError("该目录不可写，请选择一个可写目录。")
+    if kind == "cache":
+        cfg.cache_dir = clean
+    else:
+        cfg.download_dir = clean
+    cfg.save()
+    return clean
 
 
 class Config:
@@ -39,6 +103,10 @@ class Config:
         self.user = ""
         self.seewo = True
         self.dock_on_start = False
+        self.cache_dir, self.download_dir = default_storage_dirs()
+        self.dock_size = 40
+        self.dock_hidden = []
+        self.startup = False
         self.load()
         self._fix()
 
@@ -51,6 +119,15 @@ class Config:
             self.user = d.get("user", "")
             self.seewo = bool(d.get("seewo", True))
             self.dock_on_start = bool(d.get("dock_on_start", False))
+            self.cache_dir = _clean_storage_dir(d.get("cache_dir", self.cache_dir)) or self.cache_dir
+            self.download_dir = _clean_storage_dir(d.get("download_dir", self.download_dir)) or self.download_dir
+            try:
+                self.dock_size = int(d.get("dock_size", 40))
+            except (TypeError, ValueError):
+                self.dock_size = 40
+            hidden = d.get("dock_hidden", [])
+            self.dock_hidden = [str(x) for x in hidden if isinstance(x, (str, int))] if isinstance(hidden, list) else []
+            self.startup = bool(d.get("startup", False))
             return
         except Exception:
             pass
@@ -76,13 +153,20 @@ class Config:
         if not s.startswith("https://"):
             s = "https://" + s
         self.server = s if s in ALLOWED else DEFAULT_SERVER
+        self.cache_dir = _clean_storage_dir(self.cache_dir)
+        self.download_dir = _clean_storage_dir(self.download_dir)
+        self.dock_size = max(32, min(48, int(self.dock_size or 40)))
+        self.dock_hidden = sorted(set(self.dock_hidden or []))
 
     def save(self):
         self._fix()
         try:
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump({"server": self.server, "token": self.token, "user": self.user,
-                           "seewo": self.seewo, "dock_on_start": self.dock_on_start}, f, ensure_ascii=False)
+                           "seewo": self.seewo, "dock_on_start": self.dock_on_start,
+                           "cache_dir": self.cache_dir, "download_dir": self.download_dir,
+                           "dock_size": self.dock_size, "dock_hidden": self.dock_hidden,
+                           "startup": self.startup}, f, ensure_ascii=False)
         except Exception:
             pass
 
@@ -124,6 +208,54 @@ def api(method: str, path: str, body=None, timeout: float = 15):
         return status, json.loads(raw.decode("utf-8") or "null")
     except Exception:
         return status, {"detail": raw[:200].decode("utf-8", "ignore")}
+
+
+def ai_stream(path: str, body: dict, on_event=None, timeout: float = 180):
+    """流式读取服务端 SSE AI 回复, 返回 (status, data); on_event 在线程中调用。"""
+    headers = {"User-Agent": f"FLA-Desktop/{VERSION}", "Accept": "text/event-stream",
+               "Content-Type": "application/json"}
+    if cfg.token:
+        headers["Authorization"] = "Bearer " + cfg.token
+    req = urllib.request.Request(full_url(path), data=json.dumps(body).encode("utf-8"),
+                                 headers=headers, method="POST")
+    try:
+        last = {}
+        data_lines = []
+        with urllib.request.urlopen(req, timeout=timeout, context=_CTX) as r:
+            for raw in r:
+                line = raw.decode("utf-8", "ignore").rstrip("\r\n")
+                if not line:
+                    if data_lines:
+                        try:
+                            event = json.loads("\n".join(data_lines))
+                            last.update(event)
+                            if on_event:
+                                on_event(event)
+                        except (TypeError, ValueError):
+                            pass
+                        data_lines = []
+                    continue
+                if line.startswith(":"):
+                    continue
+                if line.startswith("data:"):
+                    data_lines.append(line[5:].lstrip())
+            if data_lines:
+                try:
+                    event = json.loads("\n".join(data_lines))
+                    last.update(event)
+                    if on_event:
+                        on_event(event)
+                except (TypeError, ValueError):
+                    pass
+        return 200, last
+    except urllib.error.HTTPError as e:
+        raw = e.read()
+        try:
+            return e.code, json.loads(raw.decode("utf-8") or "{}")
+        except Exception:
+            return e.code, {"detail": raw[:500].decode("utf-8", "ignore")}
+    except Exception as e:
+        return 0, {"detail": str(e)}
 
 
 def upload(path: str, progress=None, timeout: float = 600, url: str = "/api/files/upload", fields=None):
@@ -256,9 +388,13 @@ def safe_name(name: str) -> str:
 
 
 def cache_path(name: str) -> str:
-    d = os.path.join(data_dir(), "cache")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, safe_name(name))
+    """缓存目录中的单个路径 (不用于保存课件)。"""
+    return os.path.join(storage_location("cache"), safe_name(name))
+
+
+def download_path(name: str) -> str:
+    """课件下载目录中的目标文件; Windows 不允许退回到系统盘。"""
+    return os.path.join(storage_location("download"), safe_name(name))
 
 
 def launch_presentation(path: str):
@@ -348,6 +484,33 @@ def exe_path() -> str:
     return sys.executable if getattr(sys, "frozen", False) else os.path.abspath(sys.argv[0])
 
 
+def set_autostart(enabled: bool) -> bool:
+    """只写当前用户 HKCU\Run, 不提权也不改系统登录/安全策略。"""
+    if not IS_WIN:
+        return False
+    try:
+        import winreg
+        exe = exe_path()
+        if BUNDLED or getattr(sys, "frozen", False):
+            command = f'"{exe}"'
+        else:
+            command = f'"{sys.executable}" "{exe}"'
+        key_path = r"Software\Microsoft\Windows\CurrentVersion\Run"
+        with winreg.CreateKey(winreg.HKEY_CURRENT_USER, key_path) as key:
+            if enabled:
+                winreg.SetValueEx(key, "FLA", 0, winreg.REG_SZ, command)
+            else:
+                try:
+                    winreg.DeleteValue(key, "FLA")
+                except FileNotFoundError:
+                    pass
+        cfg.startup = bool(enabled)
+        cfg.save()
+        return True
+    except Exception:
+        return False
+
+
 def register_protocol():
     if not IS_WIN:
         return
@@ -420,4 +583,5 @@ def cleanup_old():
 
 
 def update_temp_path() -> str:
-    return os.path.join(tempfile.gettempdir(), "FLA_update.exe")
+    """更新包也落在用户配置的缓存目录, 不悄悄写入 Windows 系统临时目录。"""
+    return cache_path("FLA_update.exe")

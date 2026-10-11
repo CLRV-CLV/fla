@@ -42,8 +42,9 @@ import java.util.ArrayList;
  */
 public class MainActivity extends Activity {
     static final String HOME = "https://app.fla/home.html";
-    static final String VERSION = "1.3.0";
-    static final int VERSION_CODE = 3;
+    // Keep update comparisons in lockstep with app/build.gradle to avoid re-offering the same APK.
+    static final String VERSION = BuildConfig.VERSION_NAME;
+    static final int VERSION_CODE = BuildConfig.VERSION_CODE;
     static final String[] SERVERS = {"https://t.clrv.top", "https://t.fyx.best"};
     static final int REQ_CAPTURE = 7, REQ_CAM = 8, REQ_FILE = 9;
 

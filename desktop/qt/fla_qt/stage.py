@@ -12,7 +12,7 @@ import time
 
 from PyQt5.QtCore import QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRegion
-from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (BodyLabel, PrimaryPushButton, PushButton, SegmentedWidget, ToolTipFilter,
                             ToolTipPosition, TransparentToggleToolButton, TransparentToolButton)
@@ -121,13 +121,29 @@ def _icon(kind: str) -> QIcon:
 
 
 class Grip(QLabel):
-    """拖动把手: 按住拖动整个工具栏"""
+    """显式拖动把手; 子控件接管鼠标时仍能移动完整工具栏/最小化浮窗。"""
 
-    def __init__(self, parent):
+    def __init__(self, parent, window=None):
         super().__init__(parent)
+        self.window_to_move = window or parent.window()
         self.setFixedSize(22, 40)
         self.setCursor(Qt.SizeAllCursor)
         self.setToolTip("按住拖动工具栏")
+        self._drag_offset = None
+
+    def mousePressEvent(self, e):
+        if e.button() == Qt.LeftButton:
+            self._drag_offset = e.globalPos() - self.window_to_move.frameGeometry().topLeft()
+            e.accept()
+
+    def mouseMoveEvent(self, e):
+        if self._drag_offset is not None and e.buttons() & Qt.LeftButton:
+            self.window_to_move.move(e.globalPos() - self._drag_offset)
+            e.accept()
+
+    def mouseReleaseEvent(self, e):
+        self._drag_offset = None
+        e.accept()
 
     def paintEvent(self, e):
         p = QPainter(self)
@@ -604,6 +620,9 @@ class Dock(_Card):
         self.bar.setSpacing(2)
         self.tools = {}
         self.btns = {}
+        self.peer = None
+        self.button_size = core.cfg.dock_size
+        self.hidden_cmds = set(core.cfg.dock_hidden)
         self.page_label = QLabel("1")
         self.page_label.setMinimumWidth(44 if ppt else 28)
         self.page_label.setAlignment(Qt.AlignCenter)
@@ -626,7 +645,8 @@ class Dock(_Card):
             self.bar.addWidget(f)
             self.bar.addSpacing(4)
 
-        self.bar.addWidget(Grip(self))
+        self.grip = Grip(self, self)
+        self.bar.addWidget(self.grip)
         if ppt:
             tag = QLabel("PPT")
             tag.setStyleSheet("background:#111;color:#fff;border-radius:4px;padding:1px 5px;font-size:11px;font-weight:600;")
@@ -651,6 +671,7 @@ class Dock(_Card):
         self.phone_btn = btn(FIF.PHONE, "手机投屏 / 观看", "phone", toggle=True)
         sep()
         btn(FIF.HOME, "打开主窗口", "main")
+        btn(FIF.SETTING, "自定义工具栏", "dock_settings")
         btn(FIF.MINIMIZE, "收起工具盒", "collapse")
         if ppt:
             btn(FIF.CLOSE, "结束 PPT 放映", "ppt_exit")
@@ -663,12 +684,93 @@ class Dock(_Card):
         self.mini = _Card(22)
         ml = QHBoxLayout(self.mini)
         ml.setContentsMargins(4, 4, 4, 4)
+        self.mini_grip = Grip(self.mini, self.mini)
+        self.mini_grip.setFixedSize(20, 36)
+        self.mini_grip.setToolTip("按住拖动最小化工具栏")
+        ml.addWidget(self.mini_grip)
         mb = TransparentToolButton(FIF.EDUCATION, self.mini)
         mb.setFixedSize(36, 36)
         mb.setToolTip("展开 FLA 工具盒")
         mb.clicked.connect(self.expand)
         ml.addWidget(mb)
         self.mini.adjustSize()
+        self.apply_preferences()
+        self.set_button_size(self.button_size, save=False)
+
+    def apply_preferences(self):
+        self.hidden_cmds.discard("dock_settings")
+        for cmd, b in self.btns.items():
+            b.setVisible(cmd not in self.hidden_cmds or cmd == "dock_settings")
+        self.page_label.setVisible(self.ppt and not ({"prev", "next"} <= self.hidden_cmds))
+        self.adjustSize()
+
+    def set_button_size(self, size, save=True):
+        self.button_size = max(32, min(48, int(size)))
+        for b in self.btns.values():
+            b.setFixedSize(self.button_size, self.button_size)
+        self.grip.setFixedSize(22, self.button_size)
+        self.bar.setContentsMargins(10, max(4, (self.button_size - 28) // 2), 10,
+                                    max(4, (self.button_size - 28) // 2))
+        self.bar.setSpacing(max(1, self.button_size // 20))
+        if save:
+            core.cfg.dock_size = self.button_size
+            core.cfg.save()
+        self.adjustSize()
+
+    def open_settings(self):
+        menu = QMenu(self)
+        sizes = menu.addMenu("工具按钮大小")
+        for size in (32, 36, 40, 44, 48):
+            action = sizes.addAction(f"{size} × {size}")
+            action.setCheckable(True)
+            action.setChecked(self.button_size == size)
+            action.triggered.connect(lambda _=False, s=size: self._choose_size(s))
+        visible = menu.addMenu("显示 / 隐藏工具")
+        keep = {"dock_settings", "collapse", "end", "ppt_exit"}
+        for cmd, b in self.btns.items():
+            if cmd in keep:
+                continue
+            label = b.toolTip().split("（", 1)[0].split("(", 1)[0].strip()
+            action = visible.addAction(label or cmd)
+            action.setCheckable(True)
+            action.setChecked(cmd not in self.hidden_cmds)
+            action.triggered.connect(lambda checked, c=cmd: self._choose_visibility(c, checked))
+        menu.addSeparator()
+        reset = menu.addAction("恢复默认工具")
+        reset.triggered.connect(self._reset_preferences)
+        anchor = self.btns.get("dock_settings")
+        if anchor:
+            menu.exec_(anchor.mapToGlobal(anchor.rect().bottomLeft()))
+
+    def _choose_size(self, size):
+        core.cfg.dock_size = int(size)
+        core.cfg.save()
+        for dock in (self, self.peer):
+            if dock:
+                dock.set_button_size(size, save=False)
+
+    def _choose_visibility(self, cmd, visible):
+        hidden = set(core.cfg.dock_hidden)
+        if visible:
+            hidden.discard(cmd)
+        else:
+            hidden.add(cmd)
+        core.cfg.dock_hidden = sorted(hidden)
+        core.cfg.save()
+        for dock in (self, self.peer):
+            if dock:
+                dock.hidden_cmds = set(hidden)
+                dock.apply_preferences()
+
+    def _reset_preferences(self):
+        core.cfg.dock_hidden = []
+        core.cfg.dock_size = 40
+        core.cfg.save()
+        for dock in (self, self.peer):
+            if dock:
+                dock.hidden_cmds = set()
+                dock.apply_preferences()
+                dock.set_button_size(40, save=False)
 
     def set_tool(self, tool):
         for k, b in self.tools.items():
@@ -725,6 +827,8 @@ class Stage:
         self.ov = Overlay()
         self.desk_dock = Dock()
         self.ppt_dock = Dock(ppt=True)
+        self.desk_dock.peer = self.ppt_dock
+        self.ppt_dock.peer = self.desk_dock
         self.dock = self.desk_dock
         self.pen_pop = PenPopup(self.ov)
         self.eraser_pop = EraserPopup(self.ov)
@@ -956,6 +1060,8 @@ class Stage:
         elif cmd == "main":
             self.handle("mouse")
             self.show_main()
+        elif cmd == "dock_settings":
+            self.dock.open_settings()
         elif cmd == "collapse":
             self.pen_pop.hide()
             self.eraser_pop.hide()

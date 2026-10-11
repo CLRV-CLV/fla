@@ -101,7 +101,7 @@ function md(text) {
  * ================================================================ */
 async function view() {
   document.title = 'AI 助手 - FLA';
-  S = { convs: [], cur: null, msgs: [], models: [], modelId: 0, busy: false, ctrl: null, enabled: true };
+  S = { convs: [], cur: null, msgs: [], models: [], modelId: 0, busy: false, ctrl: null, enabled: true, onlineSearch: false };
   $('#app').innerHTML = shell(
     '<div class="ai-wrap">' +
       '<aside class="ai-side">' +
@@ -110,7 +110,10 @@ async function view() {
       '</aside>' +
       '<section class="ai-main">' +
         '<div class="ai-top"><span class="ai-title">AI 助手</span>' +
+          '<label class="ai-search-toggle" title="联网搜索会把本轮问题发送给 DuckDuckGo。请勿搜索个人或敏感信息。">' +
+            '<input id="ai-web-search" type="checkbox"> 联网搜索</label>' +
           '<select id="ai-model" class="inp ai-model-sel"></select></div>' +
+        '<div class="ai-search-hint">仅在勾选“联网搜索”后才会联网；开启时，本轮问题会发送给 DuckDuckGo。请勿输入个人或敏感信息。</div>' +
         '<div class="ai-msgs" id="ai-msgs"></div>' +
         '<div class="ai-input">' +
           '<textarea id="ai-inp" rows="2" maxlength="8000" placeholder="输入问题或需求，Enter 发送，Shift+Enter 换行"></textarea>' +
@@ -123,6 +126,7 @@ async function view() {
 
   $('#ai-new').onclick = () => newConv();
   $('#ai-send').onclick = () => send(false);
+  $('#ai-web-search').onchange = e => { S.onlineSearch = !!e.target.checked; };
   $('#ai-inp').onkeydown = e => {
     if (e.key === 'Enter' && !e.shiftKey && !e.isComposing) { e.preventDefault(); send(false); }
   };
@@ -272,7 +276,7 @@ async function send(regen) {
     const r = await fetch('/api/ai/conversations/' + cid + '/messages', {
       method: 'POST', signal: S.ctrl.signal,
       headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + API.token },
-      body: JSON.stringify({ content: text, model_id: S.modelId || null, regenerate: !!regen }),
+      body: JSON.stringify({ content: text, model_id: S.modelId || null, regenerate: !!regen, online_search: !!S.onlineSearch }),
     });
     if (!r.ok) {
       let msg = '请求失败 (' + r.status + ')';
@@ -282,6 +286,7 @@ async function send(regen) {
     const reader = r.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
+    let searching = false;
     const box = $a('#ai-msgs');
     const bubble = () => { const rows = box ? box.querySelectorAll('.ai-row.assistant .ai-bubble') : []; return rows[rows.length - 1]; };
     for (;;) {
@@ -294,11 +299,16 @@ async function send(regen) {
         const line = chunk.split('\n').find(l => l.startsWith('data:'));
         if (!line) continue;
         let ev; try { ev = JSON.parse(line.slice(5)); } catch (e) { continue; }
-        if (ev.error) { errored = true; pending.content += (pending.content ? '\n\n' : '') + '⚠ ' + ev.error; }
-        if (ev.delta) pending.content += ev.delta;
+        if (ev.searching) searching = true;
+        if (ev.error) { searching = false; errored = true; pending.content += (pending.content ? '\n\n' : '') + '⚠ ' + ev.error; }
+        if (ev.delta) { searching = false; pending.content += ev.delta; }
         if (ev.done && ev.message_id) pending.id = ev.message_id;
         const b = bubble();
-        if (b) { b.innerHTML = md(pending.content); if (ev.error) b.classList.add('err'); box.scrollTop = box.scrollHeight; }
+        if (b) {
+          b.innerHTML = searching && !pending.content ? '<span class="ai-search-progress">正在联网搜索…</span>' : md(pending.content);
+          if (ev.error) b.classList.add('err');
+          box.scrollTop = box.scrollHeight;
+        }
       }
     }
   } catch (e) {

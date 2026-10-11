@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import html
 import os
-import tempfile
 
 from PyQt5.QtCore import QSize, Qt, QTimer, QUrl
 from PyQt5.QtGui import QImage, QTextDocument
@@ -260,8 +259,11 @@ class ChatPage(QWidget):
             att = next((m["att"] for m in self.msgs if m.get("att") and m["att"]["id"] == aid), None)
             if not att:
                 return
-            dest = os.path.join(tempfile.gettempdir(), "FLA-chat", f"{aid}_{att.get('name') or 'file'}")
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            try:
+                dest = core.cache_path(f"chat_{aid}_{att.get('name') or 'file'}")
+            except Exception as e:
+                toast(self, False, "请先在设置中选择可写的缓存目录：" + str(e))
+                return
 
             def done(ok):
                 if ok and hasattr(os, "startfile"):

@@ -8,6 +8,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from server.main import app
 from server.desktop_dist import ensure_desktop_exe
+from server.routers.ai import MsgIn, _DuckDuckGoParser
 
 client = TestClient(app)
 
@@ -114,6 +115,23 @@ def test_file_rename_patch():
         # Cleanup
         del_resp = c.delete(f"/api/files/{fid}", headers=headers)
         assert del_resp.status_code == 200
+
+def test_opt_in_web_search_parser_and_request_flag():
+    parser = _DuckDuckGoParser()
+    parser.feed(
+        '<div class="result results_links"><div class="result__body">'
+        '<a class="result__a" href="https://example.org/physics"><span>Physics lesson</span></a>'
+        '<a class="result__snippet">Open-source <b>simulation</b></a>'
+        '</div></div>'
+    )
+    if parser.current:
+        parser._finish()
+    assert parser.items == [{
+        "title": "Physics lesson", "url": "https://example.org/physics", "snippet": "Open-source simulation"
+    }]
+    assert MsgIn(content="Explain this", online_search=True).online_search is True
+    assert MsgIn(content="Explain this").online_search is False
+
 
 def test_web_static_assets_serve():
     resp_index = client.get("/")

@@ -1088,8 +1088,15 @@ gen_conf
     check("放映舞台内置课堂计时器(倒计时+秒表+音效提醒+最小化)",
           "fla-timer-widget" in ms_js and "countdown" in ms_js and "stopwatch" in ms_js and "playAlarm" in ms_js and "fla-timer-min" in ms_js, "")
 
-    check("放映舞台内置随机抽选(希沃3D舞台+名单导入+数字摇号+彩带撒花动效)",
-          "fla-picker-widget" in ms_js and "parse-roster" in ms_js and "startPickerRoll" in ms_js and "finalizePick" in ms_js and "launchConfetti" in ms_js, "")
+    check("放映舞台内置随机抽选(名单管理+本机Excel/CSV解析+数字摇号+彩带动效)",
+          "fla-picker-widget" in ms_js and "xlsx.full.min.js" in ms_js and "reader.readAsArrayBuffer(f)" in ms_js and
+          "startPickerRoll" in ms_js and "finalizePick" in ms_js and "launchConfetti" in ms_js, "")
+    check("投屏舞台浮窗复用 Interact.js 实现拖动缩放，PPT 两侧提供大翻页箭头",
+          "interact.min.js" in (root / "web" / "index.html").read_text() and "makeDraggable(bnb" in ms_js and
+          "edges: { right: '.fla-resize-grip', bottom: '.fla-resize-grip' }" in ms_js and
+          "ms-side-arrow" in (root / "web" / "style.css").read_text(), "")
+    check("课堂计时器支持自定义分秒及本机记忆的浮窗尺寸",
+          "tmCustomMin" in ms_js and "fla_ms_timer_rect" in ms_js and "fla-widget-resize" in ms_js, "")
 
     check("放映舞台向微软iframe发送postMessage穿透步进指令(元素级动画步进)",
           "sendMsAction" in ms_js and "Action_StepNext" in ms_js and "Action_NextSlide" in ms_js and "postMessage" in ms_js, "")
@@ -1117,10 +1124,44 @@ gen_conf
     check("present.html 正确引用相对路径 msstage.js",
           'src="js/msstage.js' in (root / "web" / "present.html").read_text(), "")
 
+    ai_js = (root / "web" / "js" / "ai.js").read_text()
+    ai_py = (root / "server" / "routers" / "ai.py").read_text()
+    desktop_window = (root / "desktop" / "qt" / "fla_qt" / "window.py").read_text()
+    check("Web 与桌面 AI 皆支持用户主动开启联网搜索并提示第三方隐私边界",
+          "online_search" in ai_js and "_web_search(search_query)" in ai_py and
+          "online_search" in desktop_window and "DuckDuckGo" in desktop_window, "")
+    mobile_main = (root / "mobile" / "android" / "app" / "src" / "main" / "java" / "top" / "clrv" / "fla" / "MainActivity.java").read_text()
+    mobile_home = (root / "mobile" / "android" / "app" / "src" / "main" / "assets" / "home.html").read_text()
+    mobile_build = (root / "mobile" / "android" / "build_apk.sh").read_text()
+    check("安卓更新比较读取 Gradle BuildConfig；直连 APK 构建也生成同版本 BuildConfig",
+          "BuildConfig.VERSION_CODE" in mobile_main and "BuildConfig.java" in mobile_build and
+          "home-grid" in mobile_home and "castEntry" in mobile_home, "")
+    cast_py = (root / "desktop" / "qt" / "fla_qt" / "cast.py").read_text()
+    check("桌面手机画面浮窗支持置顶、拖动与缩放，控制条可结束投屏",
+          "WindowStaysOnTopHint" in cast_py and "QSizeGrip(self)" in cast_py and
+          "stage.add_floating(self.phone_view)" in cast_py and "ctl.stop" in cast_py, "")
+    core_py = (root / "desktop" / "qt" / "fla_qt" / "core.py").read_text()
+    check("缓存、更新包与课件下载使用用户可配置路径",
+          "def set_storage_dir" in core_py and "def download_path" in core_py and
+          'return cache_path("FLA_update.exe")' in core_py, "")
+    check("桌面提供可选的开源实验工具官方项目目录",
+          "class ExperimentsPage(Page):" in desktop_window and "Tracker" in desktop_window and
+          "Avogadro" in desktop_window and 'self.experiments, FIF.LINK, "实验工具"' in desktop_window, "")
+    lib_readme = (root / "web" / "lib" / "README.md").read_text()
+    check("开源拖动缩放、离线名单解析与抽选动效库附许可证/来源说明",
+          "interact.js 1.10.28" in lib_readme and "SheetJS Community Edition 0.20.3" in lib_readme and
+          "canvas-confetti 1.9.3" in lib_readme, "")
+
     # 8.10 前端脚本零语法错误与初始化执行验证 (杜绝 "加载中…" 卡死)
-    node_chk = subprocess.run(["node", "-c", "web/js/api.js", "web/js/ui.js", "web/js/app.js", "web/js/admin.js", "web/js/chat.js", "web/js/msstage.js", "web/js/viewer.js"],
-                              capture_output=True, text=True, cwd=str(root))
-    check("前端 JavaScript 脚本编译零语法错误", node_chk.returncode == 0, node_chk.stderr)
+    node_files = ["web/js/api.js", "web/js/ui.js", "web/js/app.js", "web/js/admin.js", "web/js/chat.js",
+                  "web/js/ai.js", "web/js/msstage.js", "web/js/viewer.js", "web/lib/interactjs/interact.min.js",
+                  "web/lib/xlsx/xlsx.full.min.js", "web/lib/canvas-confetti/confetti.browser.js"]
+    node_errors = []
+    for node_file in node_files:
+        node_chk = subprocess.run(["node", "--check", node_file], capture_output=True, text=True, cwd=str(root))
+        if node_chk.returncode:
+            node_errors.append(node_file + ": " + node_chk.stderr.strip())
+    check("前端 JavaScript 与本地开源库逐个编译零语法错误", not node_errors, "\n".join(node_errors))
 
     # === 5f. 手机投屏遥控与桌面助手打包 (v1.28) ============================
     print("\n== 5f. 手机投屏遥控与桌面助手打包 (v1.28) =========================")

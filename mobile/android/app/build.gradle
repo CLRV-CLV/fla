@@ -3,6 +3,7 @@ plugins { id "com.android.application" }
 android {
     namespace "top.clrv.fla"
     compileSdk 34
+    buildFeatures { buildConfig true }
     defaultConfig {
         applicationId "top.clrv.fla"
         minSdk 24

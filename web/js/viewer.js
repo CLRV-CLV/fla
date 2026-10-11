@@ -1764,7 +1764,7 @@
       '<div class="pop-row"><span class="pop-lb">粗细</span>' +
       '<input type="range" min="' + (t === 'pen' ? 1 : 6) + '" max="' + (t === 'pen' ? 14 : 40) + '" step="1" value="' + cfg.width + '" id="popw">' +
       '<b class="pop-val" id="popwv">' + cfg.width + '</b></div>' +
-      '<div class="pop-preview"><svg height="34" width="220"><line id="prevline" x1="10" y1="17" x2="210" y2="17" stroke="' + cfg.color + '" stroke-width="' + cfg.width + '" stroke-linecap="round"' + (t === 'marker' ? ' opacity=".42"' : '') + '/></svg></div>';
+      '<div class="pop-preview"><svg height="48" width="220"><line id="prevline" x1="10" y1="24" x2="210" y2="24" stroke="' + cfg.color + '" stroke-width="' + cfg.width + '" stroke-linecap="round"' + (t === 'marker' ? ' opacity=".42"' : '') + '/></svg></div>';
     pop.querySelectorAll('.swatch[data-c]').forEach(b => b.onclick = () => {
       cfg.color = b.dataset.c;
       pop.querySelectorAll('.swatch').forEach(x => x.classList.remove('on'));
@@ -1925,12 +1925,26 @@
   function loadCfg() {
     try {
       const s = storeGet('fla_cfg');
-      if (!s) return;
-      const c = JSON.parse(s);
-      ['pen', 'marker', 'eraser', 'shape', 'text'].forEach(k => {
-        if (c[k]) Object.assign(V.cfg[k], c[k]);
-      });
+      if (s) {
+        const c = JSON.parse(s);
+        ['pen', 'marker', 'eraser', 'shape', 'text'].forEach(k => {
+          if (c && c[k] && typeof c[k] === 'object') Object.assign(V.cfg[k], c[k]);
+        });
+      }
     } catch (e) { }
+    const width = (value, fallback, min, max) => {
+      const n = Number(value);
+      return Math.round(clamp(Number.isFinite(n) ? n : fallback, min, max));
+    };
+    V.cfg.pen.width = width(V.cfg.pen.width, DEFAULT_CFG.pen.width, 1, 14);
+    V.cfg.marker.width = width(V.cfg.marker.width, DEFAULT_CFG.marker.width, 6, 40);
+    V.cfg.shape.width = width(V.cfg.shape.width, DEFAULT_CFG.shape.width, 1, 12);
+    V.cfg.text.size = width(V.cfg.text.size, DEFAULT_CFG.text.size, 12, 72);
+    V.cfg.eraser.width = width(V.cfg.eraser.width, DEFAULT_CFG.eraser.width, 6, 120);
+    ['pen', 'marker', 'shape', 'text'].forEach(k => {
+      if (!/^#[0-9a-f]{6}$/i.test(String(V.cfg[k].color || ''))) V.cfg[k].color = DEFAULT_CFG[k].color;
+    });
+    if (!['object', 'pixel'].includes(V.cfg.eraser.mode)) V.cfg.eraser.mode = DEFAULT_CFG.eraser.mode;
   }
 
   function saveCfg() {

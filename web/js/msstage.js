@@ -101,6 +101,11 @@
     if (css) d.style.cssText = css;
     return d;
   }
+  function escHtml(value) {
+    return String(value == null ? '' : value).replace(/[&<>\"']/g, function (ch) {
+      return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '\"': '&quot;', "'": '&#39;' })[ch];
+    });
+  }
   function svgEl(w, h, inner, sw) {
     return '<svg width="' + w + '" height="' + h + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" ' +
       'stroke-width="' + (sw || 2) + '" stroke-linecap="round" stroke-linejoin="round">' + inner + '</svg>';
@@ -113,41 +118,138 @@
     var m = Math.floor(sec / 60), s = sec % 60;
     return (m < 10 ? '0' : '') + m + ':' + (s < 10 ? '0' : '') + s;
   }
-  function makeDraggable(widget, handle) {
+  function restoreWidgetRect(widget, key) {
+    if (!widget || !key) return;
+    widget.setAttribute('data-fla-rect-key', key);
+    try {
+      var r = JSON.parse(st(key, 'null'));
+      if (!r || !isFinite(r.x) || !isFinite(r.y)) return;
+      if (isFinite(r.w) && r.w > 0) widget.style.width = clamp(r.w, 260, Math.max(300, window.innerWidth - 16)) + 'px';
+      if (isFinite(r.h) && r.h > 0) widget.style.height = clamp(r.h, 180, Math.max(220, window.innerHeight - 16)) + 'px';
+      var widgetW = isFinite(r.w) && r.w > 0 ? widget.style.width : (widget.offsetWidth || parseFloat(getComputedStyle(widget).width) || 320);
+      var widgetH = isFinite(r.h) && r.h > 0 ? widget.style.height : (widget.offsetHeight || parseFloat(getComputedStyle(widget).height) || 240);
+      widget.style.left = clamp(r.x, 8, Math.max(8, window.innerWidth - parseFloat(widgetW) - 8)) + 'px';
+      widget.style.top = clamp(r.y, 8, Math.max(8, window.innerHeight - parseFloat(widgetH) - 8)) + 'px';
+      widget.style.right = 'auto'; widget.style.bottom = 'auto';
+    } catch (e) {}
+  }
+  function saveWidgetRect(widget) {
+    var key = widget && widget.getAttribute('data-fla-rect-key');
+    if (!key) return;
+    var r = widget.getBoundingClientRect();
+    stSet(key, JSON.stringify({ x: Math.round(r.left), y: Math.round(r.top),
+      w: Math.round(r.width), h: Math.round(r.height) }));
+  }
+  function ensureResizeGrip(widget) {
+    if (widget && !widget.querySelector('.fla-resize-grip')) {
+      var grip = el('div', 'fla-resize-grip');
+      grip.title = '拖动调整大小';
+      grip.setAttribute('aria-label', '拖动调整大小');
+      widget.appendChild(grip);
+    }
+  }
+  function makeDraggable(widget, handle, resizable) {
     if (!widget || !handle) return;
+    if (resizable) ensureResizeGrip(widget);
+    if (window.interact) {
+      if (!handle.id) handle.id = 'fla-drag-' + uid();
+      var interactable = window.interact(widget);
+      if (!widget.__flaInteractBound) {
+        widget.__flaInteractBound = true;
+        interactable.draggable({
+          allowFrom: '#' + handle.id,
+          ignoreFrom: 'button, input, select, textarea, label',
+          inertia: false,
+          listeners: {
+            move: function (e) {
+              var r = widget.getBoundingClientRect();
+              var x = clamp(r.left + e.dx, 8, Math.max(8, window.innerWidth - widget.offsetWidth - 8));
+              var y = clamp(r.top + e.dy, 8, Math.max(8, window.innerHeight - widget.offsetHeight - 8));
+              widget.style.left = x + 'px'; widget.style.top = y + 'px';
+              widget.style.right = 'auto'; widget.style.bottom = 'auto';
+              widget.style.transform = 'none';
+            },
+            end: function () { saveWidgetRect(widget); }
+          }
+        });
+        if (resizable) {
+          interactable.resizable({
+            edges: { right: '.fla-resize-grip', bottom: '.fla-resize-grip' },
+            inertia: false,
+            modifiers: [window.interact.modifiers.restrictSize({
+              min: { width: 260, height: 180 },
+              max: { width: Math.max(300, window.innerWidth - 16), height: Math.max(220, window.innerHeight - 16) }
+            })],
+            listeners: {
+              move: function (e) {
+                widget.style.width = e.rect.width + 'px';
+                widget.style.height = e.rect.height + 'px';
+                widget.style.left = clamp(e.rect.left, 8, Math.max(8, window.innerWidth - e.rect.width - 8)) + 'px';
+                widget.style.top = clamp(e.rect.top, 8, Math.max(8, window.innerHeight - e.rect.height - 8)) + 'px';
+                widget.style.right = 'auto'; widget.style.bottom = 'auto'; widget.style.transform = 'none';
+                widget.dispatchEvent(new Event('fla-widget-resize'));
+              },
+              end: function () { saveWidgetRect(widget); }
+            }
+          });
+        }
+      }
+      handle.style.touchAction = 'none';
+      return;
+    }
+    if (handle.__flaDragBound) return;
+    handle.__flaDragBound = true;
     var isDragging = false, startX = 0, startY = 0, origX = 0, origY = 0;
     handle.addEventListener('pointerdown', function (e) {
       if (e.target.closest('button, input, select, textarea, label')) return;
-      isDragging = true;
-      startX = e.clientX;
-      startY = e.clientY;
-      var rect = widget.getBoundingClientRect();
-      origX = rect.left;
-      origY = rect.top;
+      isDragging = true; startX = e.clientX; startY = e.clientY;
+      var rect = widget.getBoundingClientRect(); origX = rect.left; origY = rect.top;
       try { handle.setPointerCapture(e.pointerId); } catch (err) {}
     });
     handle.addEventListener('pointermove', function (e) {
       if (!isDragging) return;
-      var dx = e.clientX - startX;
-      var dy = e.clientY - startY;
       var maxW = window.innerWidth - widget.offsetWidth - 10;
       var maxH = window.innerHeight - widget.offsetHeight - 10;
-      var nx = Math.max(10, Math.min(maxW, origX + dx));
-      var ny = Math.max(10, Math.min(maxH, origY + dy));
-      widget.style.left = nx + 'px';
-      widget.style.top = ny + 'px';
-      widget.style.right = 'auto';
-      widget.style.bottom = 'auto';
-      widget.style.transform = 'none';
+      widget.style.left = Math.max(10, Math.min(maxW, origX + e.clientX - startX)) + 'px';
+      widget.style.top = Math.max(10, Math.min(maxH, origY + e.clientY - startY)) + 'px';
+      widget.style.right = 'auto'; widget.style.bottom = 'auto';
+      if (!widget.classList.contains('ms-bnb')) widget.style.transform = 'none';
     });
     function stopDrag(e) {
-      if (isDragging) {
-        isDragging = false;
-        try { handle.releasePointerCapture(e.pointerId); } catch (err) {}
-      }
+      if (isDragging) { isDragging = false; try { handle.releasePointerCapture(e.pointerId); } catch (err) {} saveWidgetRect(widget); }
     }
     handle.addEventListener('pointerup', stopDrag);
     handle.addEventListener('pointercancel', stopDrag);
+    if (resizable) {
+      var grip = widget.querySelector('.fla-resize-grip');
+      if (grip && !grip.__flaResizeBound) {
+        grip.__flaResizeBound = true;
+        var resizing = false, rsx = 0, rsy = 0, rsw = 0, rsh = 0, rsl = 0, rst = 0;
+        grip.addEventListener('pointerdown', function (e) {
+          e.preventDefault(); e.stopPropagation();
+          var r = widget.getBoundingClientRect();
+          resizing = true; rsx = e.clientX; rsy = e.clientY; rsw = r.width; rsh = r.height; rsl = r.left; rst = r.top;
+          try { grip.setPointerCapture(e.pointerId); } catch (err) {}
+        });
+        grip.addEventListener('pointermove', function (e) {
+          if (!resizing) return;
+          e.preventDefault(); e.stopPropagation();
+          widget.style.width = clamp(rsw + e.clientX - rsx, 260, Math.max(300, window.innerWidth - rsl - 8)) + 'px';
+          widget.style.height = clamp(rsh + e.clientY - rsy, 180, Math.max(220, window.innerHeight - rst - 8)) + 'px';
+          widget.style.left = rsl + 'px'; widget.style.top = rst + 'px';
+          widget.style.right = 'auto'; widget.style.bottom = 'auto'; widget.style.transform = 'none';
+          widget.dispatchEvent(new Event('fla-widget-resize'));
+        });
+        function stopResize(e) {
+          if (!resizing) return;
+          resizing = false;
+          try { grip.releasePointerCapture(e.pointerId); } catch (err) {}
+          saveWidgetRect(widget);
+        }
+        grip.addEventListener('pointerup', stopResize);
+        grip.addEventListener('pointercancel', stopResize);
+      }
+    }
   }
 
   /* ================================================================== */
@@ -174,11 +276,35 @@
       eraser: { width: 28, mode: 'object' },
       boardBg: 'w'
     };
+    var savedCfg = null;
     try {
       /* localStorage 里存坏了(手改/旧版本)也不能让放映台起不来 */
-      S.cfg = JSON.parse(st('fla_ms_cfg', 'null')) || CFG_DEFAULT;
-    } catch (e) { S.cfg = CFG_DEFAULT; try { localStorage.removeItem('fla_ms_cfg'); } catch (e2) { } }
-    for (var ck in CFG_DEFAULT) if (!S.cfg[ck]) S.cfg[ck] = CFG_DEFAULT[ck];
+      savedCfg = JSON.parse(st('fla_ms_cfg', 'null'));
+    } catch (e) { try { localStorage.removeItem('fla_ms_cfg'); } catch (e2) { } }
+    S.cfg = savedCfg && typeof savedCfg === 'object' && !Array.isArray(savedCfg) ? savedCfg : {};
+    for (var ck in CFG_DEFAULT) {
+      if (CFG_DEFAULT[ck] && typeof CFG_DEFAULT[ck] === 'object') {
+        var storedSection = S.cfg[ck];
+        S.cfg[ck] = Object.assign({}, CFG_DEFAULT[ck], storedSection && typeof storedSection === 'object' ? storedSection : {});
+      } else if (S.cfg[ck] === undefined || S.cfg[ck] === null) S.cfg[ck] = CFG_DEFAULT[ck];
+    }
+    function validColor(value, fallback) { return /^#[0-9a-f]{6}$/i.test(String(value || '')) ? value : fallback; }
+    function validWidth(section, key, fallback, min, max) {
+      var n = Number(section[key]);
+      section[key] = Math.round(clamp(isFinite(n) ? n : fallback, min, max));
+    }
+    validWidth(S.cfg.pen, 'width', CFG_DEFAULT.pen.width, 1, 14);
+    validWidth(S.cfg.marker, 'width', CFG_DEFAULT.marker.width, 6, 40);
+    validWidth(S.cfg.shape, 'width', CFG_DEFAULT.shape.width, 1, 14);
+    validWidth(S.cfg.text, 'size', CFG_DEFAULT.text.size, 14, 90);
+    validWidth(S.cfg.eraser, 'width', CFG_DEFAULT.eraser.width, 6, 120);
+    S.cfg.pen.color = validColor(S.cfg.pen.color, CFG_DEFAULT.pen.color);
+    S.cfg.marker.color = validColor(S.cfg.marker.color, CFG_DEFAULT.marker.color);
+    S.cfg.shape.color = validColor(S.cfg.shape.color, CFG_DEFAULT.shape.color);
+    S.cfg.text.color = validColor(S.cfg.text.color, CFG_DEFAULT.text.color);
+    if (['line', 'arrow', 'rect', 'ellipse', 'triangle'].indexOf(S.cfg.shape.type) < 0) S.cfg.shape.type = CFG_DEFAULT.shape.type;
+    if (['object', 'pixel'].indexOf(S.cfg.eraser.mode) < 0) S.cfg.eraser.mode = CFG_DEFAULT.eraser.mode;
+    if (['w', 'k', 'g'].indexOf(S.cfg.boardBg) < 0) S.cfg.boardBg = CFG_DEFAULT.boardBg;
 
     var AUTH = { Authorization: 'Bearer ' + S.token };
     function jget(u) {
@@ -253,6 +379,15 @@
         '<button class="ms-tb" data-a="full" title="全屏 (F)">' + icon('full', 17) + '</button>';
     }
     wrap.appendChild(top);
+    var sidePrev = el('button', 'ms-side-arrow ms-side-prev');
+    sidePrev.type = 'button'; sidePrev.setAttribute('aria-label', '上一页'); sidePrev.title = '上一页 (← / PageUp)';
+    sidePrev.innerHTML = icon('chevL', 28);
+    sidePrev.onclick = function (e) { e.stopPropagation(); goPage(S.page - 1); };
+    var sideNext = el('button', 'ms-side-arrow ms-side-next');
+    sideNext.type = 'button'; sideNext.setAttribute('aria-label', '下一页'); sideNext.title = '下一页 (→ / PageDown)';
+    sideNext.innerHTML = icon('chevR', 28);
+    sideNext.onclick = function (e) { e.stopPropagation(); goPage(S.page + 1); };
+    wrap.appendChild(sidePrev); wrap.appendChild(sideNext);
 
     /* ---------------- 左侧工具条 (预览模式不生成) ---------------- */
     var barL = null;
@@ -329,6 +464,9 @@
       '<canvas id="bbCv"></canvas>';
     wrap.appendChild(bnb);
     var bbCv = bnb.querySelector('#bbCv');
+    restoreWidgetRect(bnb, 'fla_ms_bnb_rect');
+    makeDraggable(bnb, bnb.querySelector('.ms-bnb-bar'), true);
+    bnb.addEventListener('fla-widget-resize', function () { sizeCanvas(); bbRedraw(); });
 
     /* ---------------- 工具栏个性化定制配置 ---------------- */
     var DEFAULT_TB_PREFS = {
@@ -479,10 +617,12 @@
     /* ---------------- 课堂计时器 (倒计时 & 秒表 - 希沃白板旗舰级 UI) ---------------- */
     var timerWidget = el('div', 'fla-widget fla-timer-widget hidden');
     wrap.appendChild(timerWidget);
+    restoreWidgetRect(timerWidget, 'fla_ms_timer_rect');
 
     var timerMin = el('div', 'fla-timer-min hidden');
     timerMin.innerHTML = '<span class="fla-timer-min-dot"></span>' + icon('timer', 15) + '<span id="tmMinTxt">05:00</span>';
     wrap.appendChild(timerMin);
+    restoreWidgetRect(timerMin, 'fla_ms_timer_min_rect');
 
     var TMR = {
       mode: 'countdown',
@@ -586,10 +726,16 @@
             '<button class="fla-tpill" data-sec="300">5分钟</button>' +
             '<button class="fla-tpill" data-sec="600">10分钟</button>' +
           '</div>' +
-          '<div class="fla-timer-presets" style="margin-bottom:12px;">' +
+          '<div class="fla-timer-presets" style="margin-bottom:8px;">' +
             '<button class="fla-tpill" data-adj="-60">-1分</button>' +
             '<button class="fla-tpill" data-adj="30">+30秒</button>' +
             '<button class="fla-tpill" data-adj="60">+1分</button>' +
+          '</div>' +
+          '<div class="fla-timer-custom">' +
+            '<span>自定义</span>' +
+            '<input id="tmCustomMin" type="number" min="0" max="5999" value="' + Math.floor(TMR.countdownSec / 60) + '" aria-label="分钟">' +
+            '<span>分</span><input id="tmCustomSec" type="number" min="0" max="59" value="' + (TMR.countdownSec % 60) + '" aria-label="秒">' +
+            '<span>秒</span><button class="fla-tpill" id="tmSetCustom">设定</button>' +
           '</div>' +
           '<div class="fla-timer-ctrls">' +
             '<button class="fla-tbtn ' + (TMR.countdownRun ? 'fla-tbtn-pause' : 'fla-tbtn-start') + '" id="tmCdStartBtn">' + (TMR.countdownRun ? '暂停' : '开始') + '</button>' +
@@ -610,7 +756,7 @@
 
       renderLaps();
       bindTimerEvents();
-      makeDraggable(timerWidget, timerWidget.querySelector('#tmHead'));
+      makeDraggable(timerWidget, timerWidget.querySelector('#tmHead'), true);
     }
 
     function renderLaps() {
@@ -649,6 +795,20 @@
           updateTimerUI();
         };
       });
+      var setCustom = timerWidget.querySelector('#tmSetCustom');
+      if (setCustom) setCustom.onclick = function () {
+        var mi = timerWidget.querySelector('#tmCustomMin');
+        var si = timerWidget.querySelector('#tmCustomSec');
+        var minutes = clamp(parseInt(mi.value, 10) || 0, 0, 5999);
+        var seconds = clamp(parseInt(si.value, 10) || 0, 0, 59);
+        var total = minutes * 60 + seconds;
+        if (!total) { toast('自定义时长至少为 1 秒'); return; }
+        stopCountdown();
+        TMR.countdownSec = total;
+        TMR.countdownRem = total;
+        updateTimerUI();
+        toast('倒计时已设为 ' + fmtT(total));
+      };
 
       var cdStart = timerWidget.querySelector('#tmCdStartBtn');
       if (cdStart) {
@@ -969,25 +1129,52 @@
       }, 800);
     }
 
-    function launchConfetti(cv) {
-      /* 极简静音庆贺动效兜底 */
+    var confettiLoad = null;
+    function launchConfetti() {
+      function fire() {
+        if (!window.confetti) return;
+        try {
+          var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+          if (reduced) return;
+          window.confetti({ particleCount: 72, spread: 62, startVelocity: 38, origin: { y: 0.64 },
+            colors: ['#ef4444', '#f59e0b', '#22c55e', '#3b82f6', '#a855f7'], disableForReducedMotion: true });
+          setTimeout(function () {
+            window.confetti({ particleCount: 36, spread: 92, startVelocity: 28, origin: { y: 0.7 },
+              colors: ['#f97316', '#facc15', '#34d399', '#60a5fa'], disableForReducedMotion: true });
+          }, 180);
+        } catch (e) {}
+      }
+      if (window.confetti) { fire(); return; }
+      if (!confettiLoad) confettiLoad = loadScript('/lib/canvas-confetti/confetti.browser.js').then(fire).catch(function () { confettiLoad = null; });
     }
 
     /* ---------------- 课堂抽选 (名单抽人 & 数字摇号) ---------------- */
     var pickerWidget = el('div', 'fla-widget fla-picker-widget hidden');
     wrap.appendChild(pickerWidget);
+    restoreWidgetRect(pickerWidget, 'fla_ms_picker_rect');
 
     var DEFAULT_ROSTER = [
       '张明', '李华', '王强', '赵敏', '钱程', '孙悦', '周杰', '吴桐',
       '郑浩', '陈晨', '韩雪', '刘洋', '杨柳', '黄晓', '何润', '徐静'
     ];
 
+    function normalizeRoster(items) {
+      var out = [], seen = Object.create(null);
+      if (!Array.isArray(items)) return out;
+      items.slice(0, 10000).forEach(function (item) {
+        if (typeof item !== 'string' && typeof item !== 'number') return;
+        var name = String(item).trim();
+        if (!name || name.length > 40 || seen[name] || out.length >= 5000) return;
+        seen[name] = true; out.push(name);
+      });
+      return out;
+    }
     function loadRoster() {
       try {
         var raw = localStorage.getItem('fla_picker_roster');
         if (raw) {
-          var arr = JSON.parse(raw);
-          if (Array.isArray(arr) && arr.length) return arr;
+          var arr = normalizeRoster(JSON.parse(raw));
+          if (arr.length) return arr;
         }
       } catch (e) {}
       return DEFAULT_ROSTER.slice();
@@ -1039,11 +1226,11 @@
           '</div>' +
           '<div class="fla-pk-drawer ' + (PK.drawerOpen ? '' : 'hidden') + '" id="pkDrawer">' +
             '<div style="display:flex; justify-content:space-between; align-items:center;">' +
-              '<span style="font-size:12px; font-weight:600; color:#0f172a;">学生名单 (支持 Excel / CSV 表格)</span>' +
+              '<span style="font-size:12px; font-weight:600; color:#0f172a;">学生名单 (Excel / CSV，仅在本机解析)</span>' +
               '<input type="file" id="pkFileInput" accept=".xlsx,.csv,.txt" style="display:none;">' +
               '<button class="fla-tpill" id="pkUploadBtn" style="background:#09090b; color:#fff; border-color:#09090b;">导入表格</button>' +
             '</div>' +
-            '<textarea class="fla-pk-textarea" id="pkRosterText" placeholder="每行一个学生姓名，如：&#10;张明&#10;李华&#10;王强">' + PK.roster.join('\n') + '</textarea>' +
+            '<textarea class="fla-pk-textarea" id="pkRosterText" placeholder="每行一个学生姓名，如：&#10;张明&#10;李华&#10;王强">' + escHtml(PK.roster.join('\n')) + '</textarea>' +
             '<div style="display:flex; justify-content:flex-end; gap:6px;">' +
               '<button class="fla-tpill" id="pkDemoBtn">填入示例</button>' +
               '<button class="fla-tpill" id="pkSaveBtn" style="background:#18181b; color:#fff; border-color:#18181b;">保存名单</button>' +
@@ -1100,7 +1287,7 @@
         '</div>';
 
       bindPickerEvents();
-      makeDraggable(pickerWidget, pickerWidget.querySelector('#pkHead'));
+      makeDraggable(pickerWidget, pickerWidget.querySelector('#pkHead'), true);
     }
 
     function bindPickerEvents() {
@@ -1160,51 +1347,81 @@
         fileInp.onchange = function () {
           var f = fileInp.files && fileInp.files[0];
           if (!f) return;
-          var fd = new FormData();
-          fd.append('file', f);
-          toast('正在解析名单文件…');
-          fetch('/api/tools/parse-roster', { method: 'POST', body: fd })
-            .then(function (r) { return r.json(); })
-            .then(function (res) {
-              if (res.ok && res.names && res.names.length) {
-                PK.roster = res.names;
-                PK.pool = res.names.slice();
-                try { localStorage.setItem('fla_picker_roster', JSON.stringify(PK.roster)); } catch (e) {}
-                toast('成功导入 ' + res.names.length + ' 名学生！');
+          fileInp.value = '';
+          if (f.size > 10 * 1024 * 1024) { toast('文件过大，请选择 10MB 以内的名单文件'); return; }
+          toast('正在本机解析名单文件…');
+          loadScript('/lib/xlsx/xlsx.full.min.js').then(function () {
+            var reader = new FileReader();
+            reader.onload = function (evt) {
+              try {
+                var raw = evt.target.result;
+                var isCsv = /\.(csv|txt)$/i.test(f.name || '');
+                var book;
+                if (isCsv) {
+                  var text;
+                  try { text = new TextDecoder('utf-8', { fatal: true }).decode(raw); }
+                  catch (utfErr) {
+                    try { text = new TextDecoder('gb18030').decode(raw); }
+                    catch (gbErr) { text = new TextDecoder().decode(raw); }
+                  }
+                  book = window.XLSX.read(text, { type: 'string', raw: false });
+                } else {
+                  book = window.XLSX.read(raw, { type: 'array', raw: false });
+                }
+                var sheet = book.Sheets[book.SheetNames[0]];
+                var rows = sheet ? window.XLSX.utils.sheet_to_json(sheet, { header: 1, raw: false, defval: '' }) : [];
+                var cleanRows = rows.slice(0, 10001).map(function (row) {
+                  return row.map(function (cell) { return String(cell == null ? '' : cell).trim(); });
+                }).filter(function (row) { return row.some(Boolean); });
+                if (!cleanRows.length) throw new Error('表格为空');
+                var header = cleanRows[0];
+                var nameCol = -1;
+                var nameHeaders = ['姓名', '名字', '学生', 'name'];
+                for (var ci = 0; ci < header.length; ci++) {
+                  var h = header[ci].toLowerCase();
+                  if (nameHeaders.some(function (key) { return h.indexOf(key) >= 0; })) { nameCol = ci; break; }
+                }
+                var hasHeader = nameCol >= 0;
+                if (!hasHeader) {
+                  for (var col = 0; col < header.length; col++) {
+                    var values = cleanRows.slice(1).map(function (row) { return row[col] || ''; });
+                    if (values.some(function (v) { return v && !/^[-+]?\d+(\.\d+)?$/.test(v); })) { nameCol = col; break; }
+                  }
+                }
+                if (nameCol < 0) nameCol = 0;
+                if (!hasHeader && /^(学号|编号|id)$/i.test(header[nameCol] || '')) hasHeader = true;
+                var names = [];
+                var seen = Object.create(null);
+                for (var ri = hasHeader ? 1 : 0; ri < cleanRows.length && names.length < 5000; ri++) {
+                  var value = (cleanRows[ri][nameCol] || '').trim();
+                  if (value && value.length <= 40 && !seen[value]) { seen[value] = true; names.push(value); }
+                }
+                if (!names.length) { toast('未能识别姓名列，请确认第一列或列标题包含“姓名”'); return; }
+                PK.roster = normalizeRoster(names);
+                PK.pool = PK.roster.slice();
+                try { localStorage.setItem('fla_picker_roster', JSON.stringify(PK.roster)); } catch (storeErr) {}
+                toast('本机解析并导入 ' + PK.roster.length + ' 名学生（名单未上传）');
                 PK.drawerOpen = false;
                 renderPickerWidget();
-              } else {
-                toast('未能在表格中识别到姓名列，请核对文件');
+              } catch (parseErr) {
+                toast('名单解析失败: ' + (parseErr.message || '请检查文件格式'));
               }
-            })
-            .catch(function () {
-              var reader = new FileReader();
-              reader.onload = function (evt) {
-                var txt = evt.target.result || '';
-                var lines = txt.split(/[\r\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
-                if (lines.length) {
-                  PK.roster = lines;
-                  PK.pool = lines.slice();
-                  try { localStorage.setItem('fla_picker_roster', JSON.stringify(PK.roster)); } catch (e) {}
-                  toast('导入成功 ' + lines.length + ' 名学生！');
-                  PK.drawerOpen = false;
-                  renderPickerWidget();
-                }
-              };
-              reader.readAsText(f);
-            });
+            };
+            reader.onerror = function () { toast('无法读取此文件'); };
+            reader.readAsArrayBuffer(f);
+          }).catch(function () { toast('名单解析组件加载失败，请检查网络后重试'); });
         };
       }
 
       var saveBtn = pickerWidget.querySelector('#pkSaveBtn');
       if (saveBtn) saveBtn.onclick = function () {
         var tx = pickerWidget.querySelector('#pkRosterText').value;
-        var names = tx.split(/[\r\n]+/).map(function (s) { return s.trim(); }).filter(Boolean);
-        if (!names.length) { toast('名单不能为空'); return; }
+        var names = normalizeRoster(tx.split(/[\r\n]+/));
+        if (!names.length) { toast('名单不能为空；每个姓名最多 40 个字符，名单最多 5000 人'); return; }
         PK.roster = names;
-        PK.pool = names.slice();
+        PK.pool = PK.roster.slice();
         try { localStorage.setItem('fla_picker_roster', JSON.stringify(PK.roster)); } catch (e) {}
-        toast('已保存 ' + names.length + ' 名学生名单');
+        toast('已保存 ' + PK.roster.length + ' 名学生名单');
         PK.drawerOpen = false;
         renderPickerWidget();
       };
@@ -1373,12 +1590,16 @@
 
       if (winRow && winners.length > 1) {
         winRow.style.display = 'flex';
-        winRow.innerHTML = winners.map(function (w) {
-          return '<span class="fla-pk-win-badge">' + w + '</span>';
-        }).join('');
+        winRow.innerHTML = '';
+        winners.forEach(function (w) {
+          var badge = el('span', 'fla-pk-win-badge');
+          badge.textContent = w;
+          winRow.appendChild(badge);
+        });
       }
 
       playAlarm();
+      if (winners.length) launchConfetti();
 
       var poolStatus = pickerWidget.querySelector('#pkPoolStatus');
       if (poolStatus) poolStatus.textContent = '候选池: ' + PK.pool.length + ' / ' + PK.roster.length + ' 人';
@@ -1780,6 +2001,8 @@
     function updatePageUI() {
       var p = wrap.querySelector('#msPage');
       if (p) p.textContent = S.page + ' / ' + total();
+      sidePrev.disabled = S.page <= 1;
+      sideNext.disabled = S.page >= total();
       var t = wrap.querySelector('#msTitle');
       if (t) t.textContent = (S.meta.name || '课件') + (isBoardPage() ? ' · 板书页' : '');
       syncRemoteState();
@@ -2114,21 +2337,37 @@
     function sliderRow(name, min, max, val, on) {
       var row = el('div', 'ms-pop-row');
       var lb = el('span', 'ms-pop-lb'); lb.textContent = name;
-      var rg = el('input'); rg.type = 'range'; rg.min = min; rg.max = max; rg.value = val; rg.className = 'ms-range';
-      var vb = el('b', 'ms-pop-val'); vb.textContent = val;
-      rg.oninput = function () { vb.textContent = rg.value; on(+rg.value); saveCfg(); redraw(); };
+      var rg = el('input'); rg.type = 'range'; rg.min = min; rg.max = max; rg.step = 1;
+      var initial = Math.round(clamp(Number(val) || min, min, max));
+      rg.value = initial; rg.className = 'ms-range';
+      var vb = el('b', 'ms-pop-val'); vb.textContent = initial;
+      rg.oninput = function () {
+        var next = Math.round(clamp(Number(rg.value) || min, min, max));
+        rg.value = next; vb.textContent = next;
+        on(next); saveCfg(); redraw();
+      };
       row.appendChild(lb); row.appendChild(rg); row.appendChild(vb);
       return row;
     }
     function saveCfg() { stSet('fla_ms_cfg', JSON.stringify(S.cfg)); }
     function buildPop(t) {
       pop.innerHTML = '';
-      if (t === 'pen') {
-        pop.appendChild(swatchRow(PEN_COLORS, S.cfg.pen.color, function (c) { S.cfg.pen.color = c; }));
-        pop.appendChild(sliderRow('粗细', 1, 14, S.cfg.pen.width, function (v) { S.cfg.pen.width = v; }));
-      } else if (t === 'marker') {
-        pop.appendChild(swatchRow(MARKER_COLORS, S.cfg.marker.color, function (c) { S.cfg.marker.color = c; }));
-        pop.appendChild(sliderRow('粗细', 6, 40, S.cfg.marker.width, function (v) { S.cfg.marker.width = v; }));
+      if (t === 'pen' || t === 'marker') {
+        var inkCfg = S.cfg[t], isMarker = t === 'marker';
+        pop.appendChild(swatchRow(isMarker ? MARKER_COLORS : PEN_COLORS, inkCfg.color,
+          function (c) { inkCfg.color = c; paintInkSample(); }));
+        var sample = el('div', 'ms-width-demo');
+        sample.innerHTML = '<span>当前粗细</span><i></i>';
+        var sampleLine = sample.querySelector('i');
+        function paintInkSample() {
+          sampleLine.style.height = clamp(inkCfg.width * (isMarker ? 0.62 : 1), 2, 24) + 'px';
+          sampleLine.style.background = inkCfg.color;
+          sampleLine.style.opacity = isMarker ? '.48' : '1';
+        }
+        pop.appendChild(sample);
+        pop.appendChild(sliderRow('粗细', isMarker ? 6 : 1, isMarker ? 40 : 14, inkCfg.width,
+          function (v) { inkCfg.width = v; paintInkSample(); }));
+        paintInkSample();
       } else if (t === 'shape') {
         var r = el('div', 'ms-pop-row');
         SHAPE_LIST.forEach(function (sh) {
@@ -2358,7 +2597,8 @@
       var r = bbCv.getBoundingClientRect();
       if (r.width < 4) return;
       var dpr = Math.min(window.devicePixelRatio || 1, 2);
-      if (bbCv.width !== Math.round(r.width * dpr)) { bbCv.width = Math.round(r.width * dpr); bbCv.height = Math.round(r.height * dpr); }
+      var pxW = Math.round(r.width * dpr), pxH = Math.round(r.height * dpr);
+      if (bbCv.width !== pxW || bbCv.height !== pxH) { bbCv.width = pxW; bbCv.height = pxH; }
       var c = bbCv.getContext('2d'), g = bbGeom();
       c.setTransform(1, 0, 0, 1, 0, 0); c.clearRect(0, 0, bbCv.width, bbCv.height);
       c.save(); c.scale(dpr, dpr); c.translate(g.ox, g.oy); c.scale(g.k, g.k);

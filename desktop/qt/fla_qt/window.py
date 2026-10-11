@@ -5,9 +5,10 @@ import os
 import threading
 import webbrowser
 
-from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
-from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QSystemTrayIcon,
-                             QTableWidgetItem, QVBoxLayout, QWidget)
+from PyQt5.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QDesktopServices, QTextCursor
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFileDialog, QHBoxLayout, QHeaderView,
+                             QPlainTextEdit, QSystemTrayIcon, QTableWidgetItem, QVBoxLayout, QWidget)
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (Action, BodyLabel, ComboBox, CaptionLabel, CardWidget, FluentWindow, IconWidget, InfoBar,
                             InfoBarPosition, LineEdit, MessageBox, NavigationItemPosition, PasswordLineEdit,
@@ -129,7 +130,8 @@ class HomePage(Page):
         row.addStretch(1)
         self.lay.addLayout(row)
         row2 = QHBoxLayout()
-        for ic, t, to in ((FIF.LIBRARY, "课件库", "library"), (FIF.MESSAGE, "聊天", "chat"),
+        for ic, t, to in ((FIF.LIBRARY, "课件库", "library"), (FIF.EDUCATION, "AI 助教", "ai"),
+                          (FIF.LINK, "实验工具", "experiments"), (FIF.MESSAGE, "聊天", "chat"),
                           (FIF.CHAT, "论坛", "forum"), (FIF.PEOPLE, "个人中心", "profile")):
             b = PushButton(ic, t)
             b.clicked.connect(lambda _=False, to=to: win.switchTo(getattr(win, to)))
@@ -312,7 +314,265 @@ class LibraryPage(Page):
                                 "token": cfg.token, "fid": str(f["id"])})
 
 
+# ================================================================== AI 助教
+class _AIEvents(QObject):
+    event = pyqtSignal(object)
+
+
+class _AIInput(QPlainTextEdit):
+    send_requested = pyqtSignal()
+
+    def keyPressEvent(self, event):
+        if event.key() in (Qt.Key_Return, Qt.Key_Enter) and not (event.modifiers() & Qt.ShiftModifier):
+            event.accept()
+            self.send_requested.emit()
+            return
+        super().keyPressEvent(event)
+
+
+class AIPage(Page):
+    """桌面端复用服务端 AI 模型、权限和 SSE 对话接口。"""
+    def __init__(self, win):
+        super().__init__("ai", "AI 助教", "使用管理员开放的模型；对话会保存到当前账号。")
+        self.win = win
+        self.models = []
+        self.conversation_id = None
+        self.transcript = ""
+        self.answer = ""
+        self.busy = False
+        self.stream_error = False
+        self.events = _AIEvents()
+        self.events.event.connect(self._on_stream_event)
+        self.flush_timer = QTimer(self)
+        self.flush_timer.setInterval(50)
+        self.flush_timer.timeout.connect(self._flush_answer)
+
+        row = QHBoxLayout()
+        self.model = ComboBox()
+        self.model.setMinimumWidth(260)
+        self.model.addItem("选择 AI 模型", userData=None)
+        refresh_btn = PushButton(FIF.SYNC, "刷新模型")
+        refresh_btn.clicked.connect(self.refresh_models)
+        new_btn = PushButton(FIF.ADD, "新对话")
+        new_btn.clicked.connect(self.new_conversation)
+        row.addWidget(BodyLabel("模型"))
+        row.addWidget(self.model)
+        self.search_check = QCheckBox("联网搜索")
+        self.search_check.setToolTip("本轮问题会发送给 DuckDuckGo 搜索网页；请勿搜索个人或敏感信息。")
+        row.addWidget(self.search_check)
+        row.addWidget(refresh_btn)
+        row.addStretch(1)
+        row.addWidget(new_btn)
+        self.lay.addLayout(row)
+        search_notice = CaptionLabel("仅勾选后才联网；开启时本轮问题会发送给 DuckDuckGo，请勿输入个人或敏感信息。")
+        search_notice.setWordWrap(True)
+        search_notice.setTextColor("#666666", "#aaaaaa")
+        self.lay.addWidget(search_notice)
+
+        self.status = CaptionLabel("登录后使用 AI 助教")
+        self.status.setTextColor("#666666", "#aaaaaa")
+        self.lay.addWidget(self.status)
+        self.output = QPlainTextEdit()
+        self.output.setReadOnly(True)
+        self.output.setPlaceholderText("AI 对话会显示在这里。")
+        self.output.setMinimumHeight(300)
+        self.lay.addWidget(self.output, 1)
+
+        row = QHBoxLayout()
+        self.input = _AIInput()
+        self.input.setPlaceholderText("输入问题，Enter 发送，Shift+Enter 换行")
+        self.input.setMaximumHeight(130)
+        self.input.setMinimumHeight(82)
+        self.input.send_requested.connect(self.send)
+        self.send_btn = PrimaryPushButton(FIF.SEND, "发送")
+        self.send_btn.clicked.connect(self.send)
+        row.addWidget(self.input, 1)
+        row.addWidget(self.send_btn)
+        self.lay.addLayout(row)
+        self.refresh_models()
+
+    def refresh_models(self, *_args):
+        if not cfg.token:
+            self.status.setText("请先到「设置」登录账号")
+            self.model.clear()
+            self.model.addItem("登录后加载模型", userData=None)
+            self.send_btn.setEnabled(False)
+            return
+        self.status.setText("正在获取可用模型…")
+        run_async(lambda: core.api("GET", "/api/ai/models"), self._models_loaded)
+
+    def _models_loaded(self, result):
+        status, data = result if isinstance(result, tuple) else (0, {})
+        if status != 200 or not isinstance(data, dict):
+            self.status.setText((data or {}).get("detail", "无法加载 AI 模型，请检查网络或登录状态"))
+            self.send_btn.setEnabled(False)
+            return
+        self.models = data.get("items") or []
+        self.model.clear()
+        if not data.get("enabled"):
+            self.model.addItem("AI 功能已关闭", userData=None)
+            self.status.setText("AI 功能已由管理员关闭")
+            self.send_btn.setEnabled(False)
+            return
+        for item in self.models:
+            label = item.get("name") or item.get("model") or "AI 模型"
+            if item.get("channel"):
+                label += "（" + item["channel"] + "）"
+            self.model.addItem(label, userData=item.get("id"))
+        if not self.models:
+            self.model.addItem("暂无可用模型", userData=None)
+            self.status.setText("管理员尚未为你的用户组开放 AI 模型")
+            self.send_btn.setEnabled(False)
+        else:
+            self.status.setText("可以开始提问；支持流式输出。")
+            self.send_btn.setEnabled(True)
+
+    def new_conversation(self, *_args):
+        if self.busy:
+            return
+        self.conversation_id = None
+        self.transcript = ""
+        self.answer = ""
+        self.output.clear()
+        self.status.setText("新对话已就绪")
+        self.input.setFocus()
+
+    def send(self, *_args):
+        if self.busy:
+            return
+        if not cfg.token:
+            self.win.toast("请先登录后使用 AI 助教", ok=False)
+            return
+        text = self.input.toPlainText().strip()
+        if not text:
+            return
+        if len(text) > 8000:
+            self.win.toast("单条消息最多 8000 字", ok=False)
+            return
+        model_id = self.model.currentData()
+        if model_id is None:
+            self.win.toast("请选择可用的 AI 模型", ok=False)
+            return
+        self.input.clear()
+        self.busy = True
+        self.send_btn.setEnabled(False)
+        self.status.setText("正在连接 AI…")
+        if self.conversation_id:
+            self._start_stream(self.conversation_id, text, int(model_id))
+            return
+        run_async(lambda: core.api("POST", "/api/ai/conversations", {"model_id": int(model_id)}),
+                  lambda result: self._conversation_created(result, text, int(model_id)))
+
+    def _conversation_created(self, result, text, model_id):
+        status, data = result if isinstance(result, tuple) else (0, {})
+        if status != 200 or not isinstance(data, dict) or not data.get("id"):
+            self.busy = False
+            self.send_btn.setEnabled(True)
+            self.status.setText("无法创建对话：" + str((data or {}).get("detail", "请重新登录或检查权限")))
+            self.input.setPlainText(text)
+            return
+        self.conversation_id = int(data["id"])
+        self._start_stream(self.conversation_id, text, model_id)
+
+    def _start_stream(self, conversation_id, text, model_id):
+        self.transcript += "你：" + text + "\nAI："
+        self.answer = ""
+        self.stream_error = False
+        self._flush_answer()
+        self.status.setText("AI 正在回答…")
+        body = {"content": text, "model_id": model_id, "online_search": self.search_check.isChecked()}
+        def work():
+            return core.ai_stream(f"/api/ai/conversations/{conversation_id}/messages", body,
+                                  on_event=lambda event: self.events.event.emit(event), timeout=180)
+        run_async(work, self._stream_finished)
+
+    def _on_stream_event(self, event):
+        if not isinstance(event, dict):
+            return
+        if event.get("searching"):
+            self.status.setText("正在联网搜索…")
+        if event.get("delta"):
+            self.status.setText("AI 正在回答…")
+            self.answer += str(event["delta"])
+            if not self.flush_timer.isActive():
+                self.flush_timer.start()
+        if event.get("error"):
+            self.stream_error = True
+            self.answer += ("\n" if self.answer else "") + "⚠ " + str(event["error"])
+            self._flush_answer()
+
+    def _flush_answer(self):
+        self.flush_timer.stop()
+        self.output.setPlainText(self.transcript + self.answer)
+        cursor = self.output.textCursor()
+        cursor.movePosition(QTextCursor.End)
+        self.output.setTextCursor(cursor)
+        self.output.ensureCursorVisible()
+
+    def _stream_finished(self, result):
+        status, data = result if isinstance(result, tuple) else (0, {})
+        if status != 200:
+            detail = (data or {}).get("detail", "请求失败") if isinstance(data, dict) else "请求失败"
+            self.answer += ("\n" if self.answer else "") + "⚠ " + str(detail)
+        if self.answer:
+            self.transcript += self.answer + "\n\n"
+        self.answer = ""
+        self._flush_answer()
+        self.busy = False
+        self.send_btn.setEnabled(bool(self.models) and bool(cfg.token))
+        self.status.setText("回答完成" if status == 200 and not self.stream_error else "AI 请求失败")
+
+
 # ================================================================== 设置
+class ExperimentResource(CardWidget):
+    def __init__(self, subject, name, description, license_text, url, parent=None):
+        super().__init__(parent)
+        row = QHBoxLayout(self)
+        row.setContentsMargins(18, 15, 18, 15)
+        details = QVBoxLayout()
+        details.setSpacing(5)
+        title = StrongBodyLabel(f"{subject} · {name}")
+        description_label = BodyLabel(description)
+        description_label.setWordWrap(True)
+        license_label = CaptionLabel(license_text)
+        license_label.setTextColor("#666666", "#aaaaaa")
+        details.addWidget(title)
+        details.addWidget(description_label)
+        details.addWidget(license_label)
+        row.addLayout(details, 1)
+        button = PushButton(FIF.LINK, "官方项目页 / 获取")
+        button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
+        row.addWidget(button)
+
+
+class ExperimentsPage(Page):
+    """由上游开源教学项目提供的可选实验工具目录，不复制或静默安装第三方程序。"""
+
+    def __init__(self, win):
+        super().__init__("experiments", "实验工具", "可选使用物理、化学与生物教学工具；优先选择开放源码项目。")
+        self.win = win
+        note = CardWidget()
+        note_lay = QVBoxLayout(note)
+        note_lay.setContentsMargins(18, 15, 18, 15)
+        note_lay.addWidget(StrongBodyLabel("安全与许可"))
+        note_text = BodyLabel("按钮只会打开项目官方页面，由教师自行选择在线使用或下载安装；FLA 不会在后台下载、静默安装或执行第三方程序。首次使用请先在受控设备上测试，并遵守各项目许可、署名要求与实验安全规范。")
+        note_text.setWordWrap(True)
+        note_lay.addWidget(note_text)
+        self.lay.addWidget(note)
+
+        resources = [
+            ("物理", "Tracker 视频分析与建模", "从实验视频追踪位置、速度、加速度，并将模型与真实运动对照；提供 Windows、macOS、Linux 安装包。", "GNU GPL v3 · 开源桌面软件", "https://opensourcephysics.github.io/tracker-website/"),
+            ("物理 / 化学 / 生物", "PhET 互动模拟", "科罗拉多大学的研究型互动模拟；可在线运行，部分模拟可下载离线使用。具体许可与署名要求以单个模拟页面为准。", "开放源码 · 按单个模拟项目的许可使用", "https://phet.colorado.edu/en/simulations"),
+            ("化学", "Avogadro 2", "跨平台分子编辑与三维可视化，适用于课堂分子结构演示，也可处理晶体和生物分子。", "BSD 3-Clause · 开源桌面软件", "https://avogadro.cc/"),
+            ("生物", "Virtual Genetics Lab", "遗传学与进化实验模拟，面向高中高年级及大学入门课程；项目提供在线体验。", "项目标示免费开源 · 具体子许可请查看上游", "https://vgl.umb.edu/"),
+            ("生物", "Human BioMedia 虚拟实验", "包含血液学、血型和神经生理等互动实验练习；无需安装，适合作为课堂补充。", "开放源码教学内容 · 在线使用", "https://www.humanbiomedia.org/lab-simulations/"),
+            ("生物 / 化学", "Virtual Molecular Biology Lab", "模拟凝胶电泳实验，便于课前熟悉操作流程；上游为 Java Swing 项目，属于较早期软件，需先验证当前系统兼容性。", "Academic Free License · 旧版 Java 桌面项目", "https://sourceforge.net/projects/virtbiolab/"),
+        ]
+        for item in resources:
+            self.lay.addWidget(ExperimentResource(*item))
+        self.lay.addStretch(1)
+
+
 class SettingsPage(Page):
     def __init__(self, win):
         super().__init__("settings", "设置")
@@ -362,6 +622,39 @@ class SettingsPage(Page):
         r.addWidget(self.logout_btn)
         v.addLayout(r)
 
+        v = card("存储位置")
+        self.cache_path_edit = LineEdit()
+        self.cache_path_edit.setReadOnly(True)
+        self.download_path_edit = LineEdit()
+        self.download_path_edit.setReadOnly(True)
+        for title, kind, edit in (("缓存目录", "cache", self.cache_path_edit),
+                                  ("课件下载目录", "download", self.download_path_edit)):
+            r = QHBoxLayout()
+            r.addWidget(BodyLabel(title), 0)
+            r.addWidget(edit, 1)
+            browse = PushButton("更改…")
+            browse.clicked.connect(lambda _=False, k=kind: self.choose_storage(k))
+            open_btn = PushButton(FIF.FOLDER, "打开")
+            open_btn.clicked.connect(lambda _=False, k=kind: self.open_storage(k))
+            r.addWidget(browse)
+            r.addWidget(open_btn)
+            v.addLayout(r)
+        storage_tip = CaptionLabel("默认优先选择可写的非系统盘；没有其他磁盘时使用用户文档目录。你可以随时改到任意可写位置；更改后不会自动搬迁旧文件。")
+        storage_tip.setWordWrap(True)
+        storage_tip.setTextColor("#666666", "#aaaaaa")
+        v.addWidget(storage_tip)
+
+        v = card("启动")
+        r = QHBoxLayout()
+        r.addWidget(BodyLabel("Windows 当前用户登录后启动 FLA（不需要管理员权限）"), 1)
+        self.startup_switch = SwitchButton()
+        self.startup_switch.setOnText("开")
+        self.startup_switch.setOffText("关")
+        self.startup_switch.setChecked(cfg.startup)
+        self.startup_switch.checkedChanged.connect(self.set_startup)
+        r.addWidget(self.startup_switch)
+        v.addLayout(r)
+
         v = card("放映")
         for text, attr in [("屏蔽希沃白板注入的 PPT 悬浮工具条", "seewo"), ("启动时自动显示放映工具盒", "dock_on_start")]:
             r = QHBoxLayout()
@@ -379,8 +672,8 @@ class SettingsPage(Page):
         r = QHBoxLayout()
         ub = PushButton(FIF.UPDATE, "检查更新")
         ub.clicked.connect(lambda: win.check_update(manual=True))
-        cb = PushButton(FIF.FOLDER, "打开课件缓存目录")
-        cb.clicked.connect(lambda: os.startfile(os.path.dirname(core.cache_path("x"))) if core.IS_WIN else None)
+        cb = PushButton(FIF.FOLDER, "打开缓存目录")
+        cb.clicked.connect(lambda: self.open_storage("cache"))
         r.addWidget(ub)
         r.addWidget(cb)
         r.addStretch(1)
@@ -391,9 +684,41 @@ class SettingsPage(Page):
     def sync(self):
         logged = bool(cfg.token)
         self.acc_state.setText(f"已登录：{cfg.user}" if logged else "未登录")
+        self.cache_path_edit.setText(cfg.cache_dir or "尚未设置（请选择可写目录）")
+        self.download_path_edit.setText(cfg.download_dir or "尚未设置（请选择可写目录）")
+        self.startup_switch.setChecked(cfg.startup)
         for w in (self.user, self.pwd, self.login_btn):
             w.setVisible(not logged)
         self.logout_btn.setVisible(logged)
+
+    def choose_storage(self, kind):
+        old = cfg.cache_dir if kind == "cache" else cfg.download_dir
+        label = "缓存目录" if kind == "cache" else "课件下载目录"
+        path = QFileDialog.getExistingDirectory(self, f"选择{label}（建议非系统盘）", old or os.path.expanduser("~"))
+        if not path:
+            return
+        try:
+            core.set_storage_dir(kind, path)
+            self.sync()
+            self.win.toast(f"{label}已更新。旧文件仍保留在原目录。")
+        except Exception as e:
+            self.win.toast(str(e), ok=False)
+
+    def open_storage(self, kind):
+        try:
+            path = core.storage_location(kind)
+            QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+        except Exception as e:
+            self.win.toast(str(e), ok=False)
+
+    def set_startup(self, enabled):
+        if not core.IS_WIN:
+            self.startup_switch.setChecked(False)
+            self.win.toast("登录启动仅支持 Windows", ok=False)
+            return
+        if not core.set_autostart(enabled):
+            self.startup_switch.setChecked(cfg.startup)
+            self.win.toast("无法更新当前用户启动项", ok=False)
 
     def save_server(self, *_):
         url = self.server.currentData() or core.DEFAULT_SERVER
@@ -451,6 +776,8 @@ class MainWindow(FluentWindow):
         self.resize(940, 680)
         self.home = HomePage(self)
         self.library = LibraryPage(self)
+        self.ai = AIPage(self)
+        self.experiments = ExperimentsPage(self)
         self.settings = SettingsPage(self)
         from .social import AnnPage, ChatPage, ForumPage, ProfilePage
         from .adminpage import AdminPage
@@ -464,6 +791,8 @@ class MainWindow(FluentWindow):
         self.profile = ProfilePage(self)
         self.addSubInterface(self.home, FIF.HOME, "首页")
         self.addSubInterface(self.library, FIF.LIBRARY, "课件库")
+        self.addSubInterface(self.ai, FIF.EDUCATION, "AI 助教")
+        self.addSubInterface(self.experiments, FIF.LINK, "实验工具")
         self.addSubInterface(self.chat, FIF.MESSAGE, "聊天")
         self.addSubInterface(self.forum, FIF.CHAT, "论坛")
         self.addSubInterface(self.anns, FIF.MEGAPHONE, "公告")
@@ -472,8 +801,13 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.profile, FIF.PEOPLE, "个人中心", NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.settings, FIF.SETTING, "设置", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setExpandWidth(180)
-        self.stackedWidget.currentChanged.connect(lambda _: self.library.load()
-                                                  if self.stackedWidget.currentWidget() is self.library else None)
+        def page_changed(_index):
+            current = self.stackedWidget.currentWidget()
+            if current is self.library:
+                self.library.load()
+            elif current is self.ai:
+                self.ai.refresh_models()
+        self.stackedWidget.currentChanged.connect(page_changed)
         self._tray()
         r = QApplication.primaryScreen().availableGeometry()
         self.move(r.center().x() - self.width() // 2, r.center().y() - self.height() // 2)
@@ -602,13 +936,19 @@ class MainWindow(FluentWindow):
         self.refresh_me()
         self.home.refresh(self.bridge_ok)
         self.settings.sync()
+        self.ai.refresh_models()
         if self.stackedWidget.currentWidget() is self.library:
             self.library.load()
 
     # ---- 下载并放映
     def open_file(self, job: dict):
         name = job.get("name") or "课件.pptx"
-        path = core.cache_path(name)
+        try:
+            path = core.download_path(name)
+        except Exception as e:
+            MessageBox("尚未设置课件保存位置", str(e), self).exec()
+            self.switchTo(self.settings)
+            return
         prog = self.library.prog
         prog.setValue(0)
         prog.show()
@@ -661,7 +1001,13 @@ class MainWindow(FluentWindow):
         if getattr(self, "_updating", False):
             return
         self._updating = True
-        dest = core.update_temp_path()
+        try:
+            dest = core.update_temp_path()
+        except Exception as e:
+            self._updating = False
+            self.toast("请先在设置中指定可写的缓存目录，再下载更新包：" + str(e), ok=False)
+            self.switchTo(self.settings)
+            return
         if manual:
             self.toast(f"正在后台下载新版本 v{ver}…")
 

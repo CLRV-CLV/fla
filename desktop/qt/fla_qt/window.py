@@ -9,7 +9,7 @@ from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
 from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QHBoxLayout, QHeaderView, QSystemTrayIcon,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 from qfluentwidgets import FluentIcon as FIF
-from qfluentwidgets import (Action, BodyLabel, ComboBox, CaptionLabel, CardWidget, FluentWindow, IconWidget, InfoBar,
+from qfluentwidgets import (Action, BodyLabel, CheckBox, ComboBox, CaptionLabel, CardWidget, FluentWindow, IconWidget, InfoBar, Slider,
                             InfoBarPosition, LineEdit, MessageBox, NavigationItemPosition, PasswordLineEdit,
                             PrimaryPushButton, ProgressBar, PushButton, RoundMenu, ScrollArea, SearchLineEdit,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, TableWidget, TitleLabel)
@@ -313,6 +313,14 @@ class LibraryPage(Page):
 
 
 # ================================================================== 设置
+def dock_tools():
+    """工具盒可隐藏的工具 (顺序与工具盒一致)"""
+    return [("prev", "上一页/步"), ("next", "下一页/步"), ("mouse", "鼠标"), ("pen", "画笔"),
+            ("marker", "荧光笔"), ("laser", "激光笔"), ("eraser", "橡皮"), ("undo", "撤销"),
+            ("clear", "清除笔迹"), ("board", "白板"), ("black", "黑屏"), ("timer", "计时器"),
+            ("phone", "手机投屏"), ("main", "主窗口")]
+
+
 class SettingsPage(Page):
     def __init__(self, win):
         super().__init__("settings", "设置")
@@ -374,6 +382,29 @@ class SettingsPage(Page):
             r.addWidget(sw)
             v.addLayout(r)
 
+        v = card("工具盒个性化 (放映工具栏)")
+        r = QHBoxLayout()
+        r.addWidget(BodyLabel("按钮大小"), 0)
+        self.dock_scale = Slider(Qt.Horizontal)
+        self.dock_scale.setRange(80, 150)
+        self.dock_scale.setValue(int(round(cfg.dock_scale * 100)))
+        self.dock_scale_lab = CaptionLabel(f"{int(round(cfg.dock_scale * 100))}%")
+        self.dock_scale.valueChanged.connect(self.on_dock_scale)
+        r.addWidget(self.dock_scale, 1)
+        r.addWidget(self.dock_scale_lab, 0)
+        v.addLayout(r)
+        v.addWidget(CaptionLabel("勾选的工具会显示在放映工具盒中，取消勾选即隐藏。收起/结束按钮始终显示。"))
+        self.dock_checks = {}
+        grid = QHBoxLayout()
+        for key, title in dock_tools():
+            cb = CheckBox(title)
+            cb.setChecked(key not in cfg.dock_hidden)
+            cb.toggled.connect(lambda on, k=key: self.on_dock_tool(k, on))
+            self.dock_checks[key] = cb
+            grid.addWidget(cb)
+        grid.addStretch(1)
+        v.addLayout(grid)
+
         v = card("存储位置 (缓存 / 下载)")
         self.storage_warn = CaptionLabel("")
         self.storage_warn.setTextColor("#c0392b", "#ff8a80")
@@ -412,6 +443,24 @@ class SettingsPage(Page):
         v.addLayout(r)
         self.lay.addStretch(1)
         self.sync()
+
+    def on_dock_scale(self, val):
+        cfg.dock_scale = round(val / 100, 2)
+        cfg.save()
+        self.dock_scale_lab.setText(f"{val}%")
+        self.apply_dock()
+
+    def on_dock_tool(self, key, on):
+        hidden = set(cfg.dock_hidden)
+        (hidden.discard if on else hidden.add)(key)
+        cfg.dock_hidden = sorted(hidden)
+        cfg.save()
+        self.apply_dock()
+
+    def apply_dock(self):
+        stage = getattr(self.win, "stage", None)
+        if stage is not None:
+            stage.apply_dock_prefs()
 
     def refresh_storage(self):
         for key, (lab, getter) in self.storage_rows.items():

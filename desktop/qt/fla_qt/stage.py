@@ -10,7 +10,7 @@ import math
 import os
 import time
 
-from PyQt5.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, QPointF, QRect, QRectF, QSize, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRegion
 from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
@@ -711,7 +711,7 @@ class Dock(_Card):
             btn(FIF.CLOSE, "结束放映工具", "end")
         self.page_label.setVisible(ppt)
         self.set_tool("mouse")
-        self.adjustSize()
+        self.apply_prefs()
 
         self.mini = _Card(22)
         ml = QHBoxLayout(self.mini)
@@ -726,6 +726,22 @@ class Dock(_Card):
         mb.installEventFilter(self._mini_drag)
         self.mini.adjustSize()
 
+    # 永远显示、不允许老师隐藏的按钮 (否则可能无法收起/退出)
+    ALWAYS_SHOWN = ("collapse", "end", "ppt_exit")
+
+    def apply_prefs(self):
+        """按设置里的「隐藏的工具」与「缩放」刷新工具盒 (按钮显隐 + 大小 + 图标)"""
+        hidden = set(core.cfg.dock_hidden)
+        s = core.cfg.dock_scale
+        side = max(28, int(round(40 * s)))
+        icon = QSize(int(round(20 * s)), int(round(20 * s)))
+        for cmd, b in self.btns.items():
+            b.setFixedSize(side, side)
+            b.setIconSize(icon)
+            b.setVisible(cmd in self.ALWAYS_SHOWN or cmd not in hidden)
+        self.adjustSize()
+        self.changed.emit()
+
     def set_tool(self, tool):
         for k, b in self.tools.items():
             b.setChecked(k == tool)
@@ -738,6 +754,7 @@ class Dock(_Card):
 
     def popup(self):
         r = _screen_rect()
+        self.apply_prefs()
         self.adjustSize()
         if not self.isVisible():
             self.move(r.center().x() - self.width() // 2, r.bottom() - self.height() - 56)
@@ -813,6 +830,12 @@ class Stage:
         self.watcher.start()
 
     # ---- 通用
+    def apply_dock_prefs(self):
+        """设置页修改工具盒个性化后调用: 两个工具盒 (桌面 / PPT) 同时生效"""
+        for d in (self.desk_dock, self.ppt_dock):
+            d.apply_prefs()
+        self.refresh_holes()
+
     def add_floating(self, w):
         if w not in self.floating:
             self.floating.append(w)

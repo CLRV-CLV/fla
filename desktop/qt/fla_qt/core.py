@@ -39,6 +39,8 @@ class Config:
         self.user = ""
         self.seewo = True
         self.dock_on_start = False
+        self.dock_hidden = []     # 工具盒中隐藏的工具 (key 列表)
+        self.dock_scale = 1.0     # 工具盒按钮缩放 (0.8 ~ 1.5)
         self.cache_dir = ""       # 课件缓存目录 (空 = 默认非 C 盘位置)
         self.download_dir = ""    # 下载保存目录 (空 = 默认非 C 盘位置)
         self.load()
@@ -54,6 +56,11 @@ class Config:
             self.seewo = bool(d.get("seewo", True))
             self.dock_on_start = bool(d.get("dock_on_start", False))
             self.cache_dir = d.get("cache_dir", "") or ""
+            self.dock_hidden = [str(x) for x in (d.get("dock_hidden") or [])]
+            try:
+                self.dock_scale = min(1.5, max(0.8, float(d.get("dock_scale", 1.0))))
+            except Exception:
+                self.dock_scale = 1.0
             self.download_dir = d.get("download_dir", "") or ""
             return
         except Exception:
@@ -87,7 +94,8 @@ class Config:
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump({"server": self.server, "token": self.token, "user": self.user,
                            "seewo": self.seewo, "dock_on_start": self.dock_on_start,
-                           "cache_dir": self.cache_dir, "download_dir": self.download_dir}, f, ensure_ascii=False)
+                           "cache_dir": self.cache_dir, "download_dir": self.download_dir,
+                           "dock_hidden": self.dock_hidden, "dock_scale": self.dock_scale}, f, ensure_ascii=False)
         except Exception:
             pass
 

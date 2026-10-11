@@ -1133,8 +1133,12 @@ gen_conf
     mobile_main = (root / "mobile" / "android" / "app" / "src" / "main" / "java" / "top" / "clrv" / "fla" / "MainActivity.java").read_text()
     mobile_home = (root / "mobile" / "android" / "app" / "src" / "main" / "assets" / "home.html").read_text()
     mobile_build = (root / "mobile" / "android" / "build_apk.sh").read_text()
-    check("安卓更新比较读取 Gradle BuildConfig；直连 APK 构建也生成同版本 BuildConfig",
+    mobile_gradle = (root / "mobile" / "android" / "app" / "build.gradle").read_text()
+    mobile_api = (root / "server" / "routers" / "mobile.py").read_text()
+    check("Android 安装包已升至 1.3.1/5，服务端版本匹配且客户端以 BuildConfig 比较",
           "BuildConfig.VERSION_CODE" in mobile_main and "BuildConfig.java" in mobile_build and
+          'versionCode 5' in mobile_gradle and 'versionName "1.3.1"' in mobile_gradle and
+          'APK_VERSION = "1.3.1"' in mobile_api and 'APK_CODE = 5' in mobile_api and
           "home-grid" in mobile_home and "castEntry" in mobile_home, "")
     cast_py = (root / "desktop" / "qt" / "fla_qt" / "cast.py").read_text()
     check("桌面手机画面浮窗支持置顶、拖动与缩放，控制条可结束投屏",
@@ -1189,7 +1193,7 @@ gen_conf
     # v1.28 免登录桌面端分发与自动更新接口
     ver_resp = c.get("/api/desktop/version")
     check("GET /api/desktop/version 免登录版本检测接口",
-          ver_resp.status_code == 200 and ver_resp.json().get("version") in ["1.28.0", "1.35.0", "1.36.0"] and "/api/desktop/download" in ver_resp.json().get("download_url", "") and len(ver_resp.json().get("changelog", [])) >= 3, ver_resp.text)
+          ver_resp.status_code == 200 and ver_resp.json().get("version") in ["1.28.0", "1.35.0", "1.36.0", "3.5.1"] and "/api/desktop/download" in ver_resp.json().get("download_url", "") and len(ver_resp.json().get("changelog", [])) >= 3, ver_resp.text)
 
     dl_exe = c.get("/api/desktop/download")
     check("GET /api/desktop/download 免登录直连下载 Windows 单文件 EXE",

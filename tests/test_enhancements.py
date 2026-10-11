@@ -46,13 +46,22 @@ def test_desktop_version_and_download():
     assert ver_resp.status_code == 200
     ver_data = ver_resp.json()
     assert ver_data["ok"] is True
-    assert ver_data["version"] == "1.36.0"
+    assert ver_data["version"] == "3.5.1"
 
     # Check download endpoint
     dl_resp = client.get("/api/desktop/download")
     assert dl_resp.status_code == 200
     assert dl_resp.content.startswith(b"MZ")
     assert len(dl_resp.content) > 300000
+
+def test_mobile_app_update_version_matches_gradle():
+    response = client.get("/api/app/info")
+    assert response.status_code == 200
+    android = response.json()["android"]
+    assert android["version"] == "1.3.1"
+    assert android["code"] == 5
+    assert android["available"] is True
+
 
 def test_csharp_client_architecture():
     cs_path = REPO_ROOT / "desktop" / "FLA_Client.cs"

@@ -11,8 +11,9 @@ from server.desktop_dist import ensure_desktop_exe
 
 router = APIRouter(prefix="/api/desktop", tags=["desktop"])
 
-CURRENT_VERSION = "3.5.0"
+CURRENT_VERSION = "3.5.1"
 CHANGELOG = [
+    "v3.5.1: 手机画面改为置顶可移动/缩放的浮窗, 最小化后仍可从悬浮控制条结束投屏; 桌面 AI 支持主动联网搜索; 缓存/课件目录可配置; 工具栏尺寸与显隐可定制; 增加开源实验工具目录",
     "v3.5.0: 公告单独一栏并自动弹出(重要公告需阅读5秒); 管理员可在客户端管理用户/邀请码/公告/板块/设置; 客户端背景与透明度可由管理员设置",
     "v3.4.4: 客户端内置 聊天 / 论坛 / 个人中心 (发消息、图片文件、发帖回帖、改资料密码、公告), 不再跳浏览器",
     "v3.4.3: 课件库可直接上传课件(按钮/拖拽), 首页一键打开网页端 课件库/聊天/论坛/个人中心(免登录)",
@@ -46,7 +47,7 @@ def get_desktop_version():
         "version": CURRENT_VERSION,
         "name": "FLA 课堂助手",
         "download_url": "/api/desktop/download",
-        "release_date": "2026-10-03",
+        "release_date": "2026-10-11",
         "size": file_size,
         "changelog": CHANGELOG,
     }

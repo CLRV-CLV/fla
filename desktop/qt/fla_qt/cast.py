@@ -13,8 +13,8 @@ import urllib.parse
 import urllib.request
 
 from PyQt5.QtCore import QBuffer, QByteArray, QIODevice, QObject, QRectF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QImage, QPainter, QPixmap
-from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PyQt5.QtGui import QColor, QImage, QPainter, QPen, QPixmap
+from PyQt5.QtWidgets import QApplication, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (BodyLabel, CaptionLabel, PrimaryPushButton, PushButton, SubtitleLabel,
                             TransparentToolButton)
@@ -104,6 +104,53 @@ class PhoneView(QWidget):
             p.drawPixmap(x, y, s.width(), s.height(), self.pix)
 
 
+class CastBall(_Card):
+    """投屏悬浮球: 面板最小化后常驻置顶, 可拖动; 单击展开面板, 右键菜单可结束投屏"""
+
+    def __init__(self, ctl):
+        super().__init__(28)
+        self.ctl = ctl
+        self._press = None
+        self.setFixedSize(56, 56)
+        self.setToolTip("投屏悬浮球：单击展开 · 拖动移动 · 右键结束投屏")
+        self.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.customContextMenuRequested.connect(self._menu)
+
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        r = QRectF(self.rect()).adjusted(2, 2, -2, -2)
+        p.setPen(QPen(QColor(0, 0, 0, 60), 1))
+        p.setBrush(QColor("#09090b"))
+        p.drawEllipse(r)
+        p.setPen(QColor("#ffffff"))
+        f = p.font()
+        f.setPointSize(11)
+        f.setBold(True)
+        p.setFont(f)
+        p.drawText(self.rect(), Qt.AlignCenter, "投屏")
+
+    def mousePressEvent(self, e):
+        super().mousePressEvent(e)
+        if e.button() == Qt.LeftButton:
+            self._press = e.globalPos()
+
+    def mouseReleaseEvent(self, e):
+        moved = self._press is not None and (e.globalPos() - self._press).manhattanLength() > 4
+        self._press = None
+        super().mouseReleaseEvent(e)
+        if not moved and e.button() == Qt.LeftButton:
+            self.ctl.restore_panel()
+
+    def _menu(self, pos):
+        m = QMenu(self)
+        m.addAction("展开投屏面板", self.ctl.restore_panel)
+        m.addAction("显示手机画面", self.ctl.show_phone)
+        m.addSeparator()
+        m.addAction("结束投屏", self.ctl.stop)
+        m.exec_(self.mapToGlobal(pos))
+
+
 class CastPanel(_Card):
     def __init__(self, ctl):
         super().__init__(16)
@@ -115,10 +162,10 @@ class CastPanel(_Card):
         top = QHBoxLayout()
         top.addWidget(SubtitleLabel("手机投屏 / 观看"))
         top.addStretch(1)
-        x = TransparentToolButton(FIF.CLOSE, self)
-        x.setToolTip("隐藏面板（投屏继续）")
-        x.clicked.connect(self.hide)
-        top.addWidget(x)
+        mn = TransparentToolButton(FIF.MINIMIZE, self)
+        mn.setToolTip("最小化为悬浮球（投屏继续，置顶可见）")
+        mn.clicked.connect(ctl.minimize_panel)
+        top.addWidget(mn)
         lay.addLayout(top)
         from qfluentwidgets import SegmentedWidget
         self.seg = SegmentedWidget(self)
@@ -183,8 +230,13 @@ class CastController(QObject):
         self.changed_at = 0.0
         self.hq_hash = None
         self.panel = CastPanel(self)
+        self.ball = CastBall(self)
         self.phone_view = PhoneView(self.hide_phone)
         stage.add_floating(self.panel)
+        stage.add_floating(self.ball)
+        self.ball.hide()
+        # 投屏期间持续把面板/悬浮球抬到最上层: 手机全屏画面或批注层被点击后不会再把控制面板盖住
+        self.top_timer = QTimer(self, interval=600, timeout=self._keep_top)
         self.sig.event.connect(self._on_event)
         self.sig.created.connect(self._on_created)
         self.sig.qr.connect(self._on_qr)
@@ -204,9 +256,29 @@ class CastController(QObject):
         if not self.active:
             self.start()
         elif self.panel.isVisible():
-            self.panel.hide()
+            self.minimize_panel()
         else:
-            self.panel.popup()
+            self.restore_panel()
+
+    def minimize_panel(self):
+        """面板 → 悬浮球 (投屏继续)"""
+        if not self.ball.isVisible():
+            r = _screen_rect()
+            self.ball.move(r.right() - self.ball.width() - 28, r.bottom() - self.ball.height() - 160)
+        self.panel.hide()
+        self.ball.show()
+        self.ball.raise_()
+
+    def restore_panel(self):
+        self.ball.hide()
+        self.panel.popup()
+
+    def _keep_top(self):
+        if not self.active:
+            return
+        for w in (self.panel, self.ball):
+            if w.isVisible():
+                w.raise_()
 
     def start(self):
         self.active = True
@@ -216,6 +288,7 @@ class CastController(QObject):
         self.panel.code.setText("配对码 ----")
         self.panel.state.setText("")
         self.panel.popup()
+        self.top_timer.start()
 
         def work():
             try:
@@ -291,9 +364,11 @@ class CastController(QObject):
         self.active = False
         self.gen += 1
         self.grab_timer.stop()
+        self.top_timer.stop()
         self.link.stop()
         self.panel.seg.setEnabled(True)
         self.panel.hide()
+        self.ball.hide()
         self.hide_phone()
         [d.phone_btn.setChecked(False) for d in (self.stage.desk_dock, self.stage.ppt_dock)]
         sid = self.sid
@@ -473,6 +548,7 @@ class CastController(QObject):
         for w in self.stage.floating:
             if w.isVisible():
                 w.raise_()
+        self._keep_top()
         if not self.stage.dock.isVisible() and not self.stage.dock.mini.isVisible():
             self.stage.start()
 

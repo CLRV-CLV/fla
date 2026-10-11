@@ -260,8 +260,7 @@ class ChatPage(QWidget):
             att = next((m["att"] for m in self.msgs if m.get("att") and m["att"]["id"] == aid), None)
             if not att:
                 return
-            dest = os.path.join(tempfile.gettempdir(), "FLA-chat", f"{aid}_{att.get('name') or 'file'}")
-            os.makedirs(os.path.dirname(dest), exist_ok=True)
+            dest = os.path.join(core.download_dir(), f"{aid}_{core.safe_name(att.get('name') or 'file')}")
 
             def done(ok):
                 if ok and hasattr(os, "startfile"):

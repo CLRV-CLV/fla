@@ -43,7 +43,7 @@ import java.util.ArrayList;
 public class MainActivity extends Activity {
     static final String HOME = "https://app.fla/home.html";
     static final String VERSION = "1.3.0";
-    static final int VERSION_CODE = 3;
+    static final int VERSION_CODE = 4;   /* 必须与 build.gradle versionCode 一致 (兜底值) */
     static final String[] SERVERS = {"https://t.clrv.top", "https://t.fyx.best"};
     static final int REQ_CAPTURE = 7, REQ_CAM = 8, REQ_FILE = 9;
 
@@ -173,6 +173,16 @@ public class MainActivity extends Activity {
 
     // ================= 自动更新: 每次打开检查 → 后台下载 → 下载好后弹窗安装 =================
     boolean updating;
+    /** 当前安装包的 versionCode (与 build.gradle 一致); 读取失败时退回常量 */
+    int installedVersionCode() {
+        try {
+            android.content.pm.PackageInfo pi = getPackageManager().getPackageInfo(getPackageName(), 0);
+            return (int) (Build.VERSION.SDK_INT >= 28 ? pi.getLongVersionCode() : pi.versionCode);
+        } catch (Exception e) {
+            return VERSION_CODE;
+        }
+    }
+
     void checkUpdate() {
         if (updating) return;
         updating = true;
@@ -188,7 +198,7 @@ public class MainActivity extends Activity {
                 if (a == null || !a.optBoolean("available")) return;
                 int code = a.optInt("code", 0);
                 final String ver = a.optString("version", "");
-                if (code <= VERSION_CODE) return;
+                if (code <= installedVersionCode()) return;   /* 以安装包真实 versionCode 为准, 不再用写死常量 */
                 long size = a.optLong("size", 0);
                 java.io.File f = UpdateProvider.apkFile(MainActivity.this);
                 java.io.File part = new java.io.File(getCacheDir(), "update.part");

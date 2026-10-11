@@ -10,7 +10,7 @@ import math
 import os
 import time
 
-from PyQt5.QtCore import QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtCore import QEvent, QObject, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
 from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRegion
 from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
@@ -21,6 +21,7 @@ from . import core
 
 COLORS = ["#111111", "#E53935", "#1E88E5", "#43A047", "#FDD835", "#FB8C00", "#8E24AA", "#FFFFFF"]
 PEN_WIDTHS = [("细", 3), ("中", 6), ("粗", 12)]
+MARKER_WIDTHS = [("细", 12), ("中", 20), ("粗", 36)]     # 荧光笔独立档位 (宽度即实际绘制宽度)
 ERASER_SIZES = [("小", 12), ("中", 28), ("大", 60)]
 
 
@@ -120,6 +121,39 @@ def _icon(kind: str) -> QIcon:
     return QIcon(pm)
 
 
+class _DragProxy(QObject):
+    """把子控件上的左键拖动转发给父卡片; 拖动过的那次松开不触发按钮点击(避免拖完误展开)"""
+
+    def __init__(self, card):
+        super().__init__(card)
+        self.card = card
+        self._press = None
+        self._off = None
+        self._moved = False
+
+    def eventFilter(self, obj, e):
+        t = e.type()
+        if t == QEvent.MouseButtonPress and e.button() == Qt.LeftButton:
+            self._press = e.globalPos()
+            self._off = e.globalPos() - self.card.frameGeometry().topLeft()
+            self._moved = False
+        elif t == QEvent.MouseMove and self._press is not None and e.buttons() & Qt.LeftButton:
+            if not self._moved and (e.globalPos() - self._press).manhattanLength() > 4:
+                self._moved = True
+            if self._moved:
+                self.card.move(e.globalPos() - self._off)
+                obj.setDown(False)
+                return True
+        elif t == QEvent.MouseButtonRelease and self._press is not None:
+            moved = self._moved
+            self._press = None
+            self._moved = False
+            if moved:
+                obj.setDown(False)
+                return True
+        return False
+
+
 class Grip(QLabel):
     """拖动把手: 按住拖动整个工具栏"""
 
@@ -167,6 +201,7 @@ class Overlay(QWidget):
         self.tool = "mouse"
         self.color = QColor(COLORS[1])
         self.width_ = PEN_WIDTHS[0][1]
+        self.marker_w = MARKER_WIDTHS[1][1]
         self.eraser_r = ERASER_SIZES[1][1]
         self.eraser_mode = "object"     # object | pixel
         self.page = 1
@@ -304,7 +339,7 @@ class Overlay(QWidget):
             return
         pos = QPointF(e.pos())
         if self.tool in ("pen", "marker"):
-            w = self.width_ * (3 if self.tool == "marker" else 1)
+            w = self.marker_w if self.tool == "marker" else self.width_
             self.cur = {"tool": self.tool, "color": self.color.name(), "w": w, "pts": [pos]}
         elif self.tool == "eraser":
             self.erase(pos, self.eraser_r, self.eraser_mode)
@@ -434,9 +469,12 @@ class Overlay(QWidget):
 
 # ================================================================== 笔 / 橡皮 设置弹窗
 class PenPopup(_Card):
+    """画笔 / 荧光笔的颜色与粗细弹窗: 两种工具各自独立的粗细档位, 按当前工具切换显示"""
+
     def __init__(self, overlay: Overlay):
         super().__init__(12, draggable=False)
         self.ov = overlay
+        self.mode = "pen"
         lay = QVBoxLayout(self)
         lay.setContentsMargins(14, 12, 14, 12)
         lay.setSpacing(10)
@@ -452,13 +490,28 @@ class PenPopup(_Card):
             self.swatches.append((c, b))
             row.addWidget(b)
         lay.addLayout(row)
-        lay.addWidget(BodyLabel("粗细"))
-        self.seg = SegmentedWidget(self)
-        for label, w in PEN_WIDTHS:
-            self.seg.addItem(str(w), label, onClick=lambda w=w: setattr(self.ov, "width_", w))
-        self.seg.setCurrentItem(str(self.ov.width_))
-        lay.addWidget(self.seg)
+        self.width_title = BodyLabel("粗细")
+        lay.addWidget(self.width_title)
+        self.segs = {}
+        for kind, table, attr in (("pen", PEN_WIDTHS, "width_"), ("marker", MARKER_WIDTHS, "marker_w")):
+            seg = SegmentedWidget(self)
+            for label, w in table:
+                seg.addItem(str(w), label, onClick=lambda w=w, a=attr: setattr(self.ov, a, w))
+            seg.setCurrentItem(str(getattr(self.ov, attr)))
+            lay.addWidget(seg)
+            self.segs[kind] = seg
+        self.set_mode("pen")
         self._paint_swatches()
+        self.adjustSize()
+
+    def set_mode(self, kind):
+        """切换到画笔/荧光笔时, 只显示对应的粗细档位, 并选中当前真实生效的粗细"""
+        self.mode = "marker" if kind == "marker" else "pen"
+        attr = "marker_w" if self.mode == "marker" else "width_"
+        for k, seg in self.segs.items():
+            seg.setVisible(k == self.mode)
+        seg = self.segs[self.mode]
+        seg.setCurrentItem(str(getattr(self.ov, attr)))
         self.adjustSize()
 
     def _paint_swatches(self):
@@ -665,9 +718,12 @@ class Dock(_Card):
         ml.setContentsMargins(4, 4, 4, 4)
         mb = TransparentToolButton(FIF.EDUCATION, self.mini)
         mb.setFixedSize(36, 36)
-        mb.setToolTip("展开 FLA 工具盒")
+        mb.setToolTip("单击展开 FLA 工具盒 · 按住拖动移动")
         mb.clicked.connect(self.expand)
         ml.addWidget(mb)
+        # 按钮会吞掉鼠标事件, 卡片本身收不到拖动 → 用事件过滤器把拖动转给卡片
+        self._mini_drag = _DragProxy(self.mini)
+        mb.installEventFilter(self._mini_drag)
         self.mini.adjustSize()
 
     def set_tool(self, tool):
@@ -927,6 +983,8 @@ class Stage:
                 if p is not pop:
                     p.hide()
             if pop is not None:
+                if cmd in ("pen", "marker"):
+                    pop.set_mode(cmd)
                 if again and pop.isVisible():
                     pop.hide()
                 elif again or not pop.isVisible():

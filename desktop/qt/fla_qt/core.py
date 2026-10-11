@@ -39,6 +39,8 @@ class Config:
         self.user = ""
         self.seewo = True
         self.dock_on_start = False
+        self.cache_dir = ""       # 课件缓存目录 (空 = 默认非 C 盘位置)
+        self.download_dir = ""    # 下载保存目录 (空 = 默认非 C 盘位置)
         self.load()
         self._fix()
 
@@ -51,6 +53,8 @@ class Config:
             self.user = d.get("user", "")
             self.seewo = bool(d.get("seewo", True))
             self.dock_on_start = bool(d.get("dock_on_start", False))
+            self.cache_dir = d.get("cache_dir", "") or ""
+            self.download_dir = d.get("download_dir", "") or ""
             return
         except Exception:
             pass
@@ -82,7 +86,8 @@ class Config:
         try:
             with open(self.path, "w", encoding="utf-8") as f:
                 json.dump({"server": self.server, "token": self.token, "user": self.user,
-                           "seewo": self.seewo, "dock_on_start": self.dock_on_start}, f, ensure_ascii=False)
+                           "seewo": self.seewo, "dock_on_start": self.dock_on_start,
+                           "cache_dir": self.cache_dir, "download_dir": self.download_dir}, f, ensure_ascii=False)
         except Exception:
             pass
 
@@ -255,10 +260,52 @@ def safe_name(name: str) -> str:
     return "".join("_" if c in '\\/:*?"<>|' else c for c in name)[:180]
 
 
+def _is_c_drive(path: str) -> bool:
+    if not IS_WIN:
+        return False
+    drive = os.path.splitdrive(os.path.abspath(path))[0].upper()
+    return drive in ("", "C:")
+
+
+def default_storage_root() -> str:
+    """默认存储根目录: 优先选择非系统盘 (D/E/F...), 避免学校电脑的冰点还原把缓存/课件清空。
+    没有其它盘时才退回用户数据目录 (此时界面会提示老师手动改到其它盘)。"""
+    if IS_WIN:
+        for letter in "DEFGHIJKLMNOPQRSTUVWXYZ":
+            root = f"{letter}:\\"
+            if os.path.isdir(root) and os.access(root, os.W_OK):
+                return os.path.join(root, "FLA")
+    return data_dir()
+
+
+def storage_warning() -> str:
+    """若当前缓存/下载目录仍在 C 盘, 返回提示文字 (供设置页显示)"""
+    for p in (cache_dir(), download_dir()):
+        if _is_c_drive(p):
+            return "当前存储位置在 C 盘：学校电脑开启冰点还原后课件会被清空，建议改到 D 盘等其它分区。"
+    return ""
+
+
+def _storage_dir(kind: str, custom: str) -> str:
+    d = custom or os.path.join(default_storage_root(), kind)
+    try:
+        os.makedirs(d, exist_ok=True)
+    except Exception:
+        d = os.path.join(data_dir(), kind)
+        os.makedirs(d, exist_ok=True)
+    return d
+
+
+def cache_dir() -> str:
+    return _storage_dir("cache", cfg.cache_dir)
+
+
+def download_dir() -> str:
+    return _storage_dir("downloads", cfg.download_dir)
+
+
 def cache_path(name: str) -> str:
-    d = os.path.join(data_dir(), "cache")
-    os.makedirs(d, exist_ok=True)
-    return os.path.join(d, safe_name(name))
+    return os.path.join(cache_dir(), safe_name(name))
 
 
 def launch_presentation(path: str):

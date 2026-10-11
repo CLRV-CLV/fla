@@ -306,6 +306,16 @@
       wrap.appendChild(barR);
     }
 
+    /* ---------------- 左右两侧大号翻页箭头 (老师站在哪边都能点到) ---------------- */
+    function edgeBtn(side, act, title) {
+      var b = el('button', 'ms-edge ms-edge-' + side);
+      b.setAttribute('data-a', act); b.title = title;
+      b.innerHTML = icon(act === 'prev' ? 'chevL' : 'chevR', 44);
+      wrap.appendChild(b); return b;
+    }
+    edgeBtn('l', 'prev', '上一页 (← / PageUp)');
+    edgeBtn('r', 'next', '下一页 (→ / PageDown)');
+
     /* ---------------- 工具配置弹窗 ---------------- */
     var pop = el('div', 'ms-pop hidden');
     wrap.appendChild(pop);

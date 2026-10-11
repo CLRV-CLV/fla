@@ -6,7 +6,7 @@ import threading
 import webbrowser
 
 from PyQt5.QtCore import QObject, Qt, QTimer, pyqtSignal
-from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QHBoxLayout, QHeaderView, QSystemTrayIcon,
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QHBoxLayout, QHeaderView, QSystemTrayIcon,
                              QTableWidgetItem, QVBoxLayout, QWidget)
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (Action, BodyLabel, ComboBox, CaptionLabel, CardWidget, FluentWindow, IconWidget, InfoBar,
@@ -374,19 +374,71 @@ class SettingsPage(Page):
             r.addWidget(sw)
             v.addLayout(r)
 
+        v = card("存储位置 (缓存 / 下载)")
+        self.storage_warn = CaptionLabel("")
+        self.storage_warn.setTextColor("#c0392b", "#ff8a80")
+        v.addWidget(self.storage_warn)
+        self.storage_rows = {}
+        for key, title, getter, attr in (
+                ("cache", "课件缓存", core.cache_dir, "cache_dir"),
+                ("download", "下载保存", core.download_dir, "download_dir")):
+            r = QHBoxLayout()
+            r.addWidget(BodyLabel(title), 0)
+            lab = CaptionLabel("")
+            lab.setWordWrap(True)
+            r.addWidget(lab, 1)
+            mod = PushButton(FIF.EDIT, "修改")
+            opn = PushButton(FIF.FOLDER, "打开")
+            mod.clicked.connect(lambda _=False, a=attr, t=title: self.change_storage(a, t))
+            opn.clicked.connect(lambda _=False, g=getter: self.open_dir(g()))
+            r.addWidget(mod)
+            r.addWidget(opn)
+            v.addLayout(r)
+            self.storage_rows[key] = (lab, getter)
+        tip = CaptionLabel("建议放在 D 盘等非系统盘：学校电脑的冰点还原只会清空 C 盘。修改后立即生效，已缓存的课件不会自动迁移。")
+        tip.setWordWrap(True)
+        tip.setTextColor("#666666", "#aaaaaa")
+        v.addWidget(tip)
+        self.refresh_storage()
+
         v = card("关于")
         v.addWidget(BodyLabel(f"{core.APP_NAME}  v{core.VERSION}"))
         r = QHBoxLayout()
         ub = PushButton(FIF.UPDATE, "检查更新")
         ub.clicked.connect(lambda: win.check_update(manual=True))
         cb = PushButton(FIF.FOLDER, "打开课件缓存目录")
-        cb.clicked.connect(lambda: os.startfile(os.path.dirname(core.cache_path("x"))) if core.IS_WIN else None)
         r.addWidget(ub)
-        r.addWidget(cb)
         r.addStretch(1)
         v.addLayout(r)
         self.lay.addStretch(1)
         self.sync()
+
+    def refresh_storage(self):
+        for key, (lab, getter) in self.storage_rows.items():
+            lab.setText(getter())
+        self.storage_warn.setText(core.storage_warning())
+        self.storage_warn.setVisible(bool(core.storage_warning()))
+
+    def change_storage(self, attr, title):
+        cur = getattr(cfg, attr) or ""
+        d = QFileDialog.getExistingDirectory(self, f"选择{title}位置", cur or core.default_storage_root())
+        if not d:
+            return
+        setattr(cfg, attr, os.path.normpath(d))
+        cfg.save()
+        self.refresh_storage()
+        self.win.toast(f"{title}位置已改为：{d}")
+
+    @staticmethod
+    def open_dir(path):
+        try:
+            if core.IS_WIN:
+                os.startfile(path)  # noqa
+            else:
+                import subprocess
+                subprocess.Popen(["xdg-open", path])
+        except Exception:
+            pass
 
     def sync(self):
         logged = bool(cfg.token)

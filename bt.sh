@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # FLA 宝塔面板 / 非 Docker 部署脚本
 #   首次安装:  bash bt.sh install          (装系统依赖 + Python 虚拟环境 + 开机自启服务)
-#   更新代码:  bash bt.sh pull [分支]       (默认 arena/01a0d6ff-fla, 更新后自动重启)
+#   更新代码:  bash bt.sh pull [分支]       (不写分支 = 用上次记住的分支, 首次默认 arena/8740dfc8-fla; 更新后自动重启)
 #   宝塔Python项目模式: bash bt.sh deps (只装系统依赖) ; bash bt.sh pull (只更新代码, 然后在宝塔点重启)
 #   其它:      bash bt.sh start|stop|restart|status|logs|passwd 新密码
 # 进程由 systemd 守护 (fla.service, 崩溃自动重启/开机自启); 宝塔负责 Nginx 反代、SSL、防火墙。
 set -u
 cd "$(dirname "$0")"
 DIR=$(pwd)
-BRANCH_DEFAULT="arena/01a0d6ff-fla"
+BRANCH_DEFAULT="arena/8740dfc8-fla"     # 首次默认分支; 之后分支记在 deploy/.env 的 FLA_BRANCH 里
 ENVF="$DIR/deploy/.env"
 VENV="$DIR/.venv"
 SVC=fla
@@ -19,6 +19,11 @@ mkdir -p "$DIR/deploy"
 getenv() { grep -E "^$1=" "$ENVF" 2>/dev/null | tail -1 | cut -d= -f2-; }
 PORT=$(getenv PORT); PORT=${PORT:-8306}
 RTMP=$(getenv RTMP_PORT); RTMP=${RTMP:-1935}
+# 上次拉取用的分支 (记在 deploy/.env, 更新脚本不会覆盖该文件); 没有记录时视为旧默认分支
+RECORDED_BRANCH=$(getenv FLA_BRANCH)
+setenv() {  # setenv KEY VALUE : 写入/替换 deploy/.env 中的一行
+  if grep -qE "^$1=" "$ENVF" 2>/dev/null; then sed -i "s#^$1=.*#$1=$2#" "$ENVF"; else echo "$1=$2" >> "$ENVF"; fi
+}
 
 find_python() {
   # 优先 3.11/3.12/3.10, 再找宝塔「Python 版本管理」装的版本, 最后系统 python3 (>=3.9)
@@ -113,7 +118,10 @@ REPO_PATH="CLRV-FYX/fla"
 SOURCES="https://github.com https://gh-proxy.com/https://github.com https://ghfast.top/https://github.com https://gh.llkk.cc/https://github.com"
 
 download_code() {
-  B="${1:-$BRANCH_DEFAULT}"
+  B="${1:-${RECORDED_BRANCH:-$BRANCH_DEFAULT}}"
+  # 切换分支 (与上次记录的不同) 时不做"只允许更新"的时间检查, 否则旧分支会被拒绝
+  PREV_B="${RECORDED_BRANCH:-arena/01a0d6ff-fla}"
+  [ "$B" != "$PREV_B" ] && SWITCHING=1 || SWITCHING=0
   echo ">> 同步代码 (分支 $B)"
   if command -v git >/dev/null 2>&1; then
     # 增量更新: 首次把目录变成 git 仓库, 之后每次只下载变化的部分 (几十 KB), 不再整包 33MB
@@ -126,10 +134,12 @@ download_code() {
       echo "  git: $S/$REPO_PATH"
       rm -f .git/FETCH_HEAD
       if timeout 900 git fetch -q --depth 1 "$S/$REPO_PATH.git" "$B" && git rev-parse -q --verify FETCH_HEAD >/dev/null \
-         && [ "$(git log -1 --format=%ct FETCH_HEAD)" -ge "$(git log -1 --format=%ct HEAD 2>/dev/null || echo 0)" ] \
+         && { [ "$SWITCHING" = 1 ] || [ "$(git log -1 --format=%ct FETCH_HEAD)" -ge "$(git log -1 --format=%ct HEAD 2>/dev/null || echo 0)" ]; } \
          && git reset -q --hard FETCH_HEAD; then
         echo "  ✔ 代码版本: ${OLD:-首次} -> $(git log --oneline -1)"
         git log -1 --format='%h %cd' --date=format:'%Y-%m-%d %H:%M' > server/BUILD
+        setenv FLA_BRANCH "$B"; RECORDED_BRANCH="$B"   # 记住分支, 下次直接 bash bt.sh pull
+        echo "  ✔ 已记住分支 $B (下次更新无需再写分支名)"
         return 0
       fi
       echo "  ✘ 失败或太慢, 换下一个源"
@@ -151,6 +161,7 @@ download_code() {
   [ -s "$T" ] || { echo "✘ 代码下载失败"; return 1; }
   tar -xzf "$T" --strip-components=1 || return 1
   date '+tgz %Y-%m-%d %H:%M' > server/BUILD
+  setenv FLA_BRANCH "$B"; RECORDED_BRANCH="$B"
   echo "  ✔ 代码已更新 ($(grep -oP 'CURRENT_VERSION = "\K[^"]+' server/routers/desktop.py))"
 }
 

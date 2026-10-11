@@ -150,7 +150,8 @@ case "${1:-help}" in
     ;;
   pull)
     shift
-    TARGET_BRANCH="${1:-${FLA_BRANCH:-arena/01a0d6ff-fla}}"
+    TARGET_BRANCH="${1:-${FLA_BRANCH:-$(grep -E "^FLA_BRANCH=" deploy/.env 2>/dev/null | tail -1 | cut -d= -f2-)}}"
+    [ -n "$TARGET_BRANCH" ] || TARGET_BRANCH="arena/8740dfc8-fla"
     echo ">> 同步最新代码 (分支 $TARGET_BRANCH) ..."
     UPDATED=0
     if [ -d .git ] && command -v git >/dev/null 2>&1; then
@@ -238,7 +239,8 @@ case "${1:-help}" in
     ;;
   update)
     shift
-    TARGET_BRANCH="${1:-${FLA_BRANCH:-arena/01a0d6ff-fla}}"
+    TARGET_BRANCH="${1:-${FLA_BRANCH:-$(grep -E "^FLA_BRANCH=" deploy/.env 2>/dev/null | tail -1 | cut -d= -f2-)}}"
+    [ -n "$TARGET_BRANCH" ] || TARGET_BRANCH="arena/8740dfc8-fla"
     echo ">> 拉取最新代码 (分支 $TARGET_BRANCH) ..."
     if [ -d .git ]; then
       git fetch origin "$TARGET_BRANCH" && git reset --hard "origin/$TARGET_BRANCH"

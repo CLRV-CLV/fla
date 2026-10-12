@@ -1196,7 +1196,7 @@ gen_conf
     # v1.28 免登录桌面端分发与自动更新接口
     ver_resp = c.get("/api/desktop/version")
     check("GET /api/desktop/version 免登录版本检测接口",
-          ver_resp.status_code == 200 and ver_resp.json().get("version") in ["1.28.0", "1.35.0", "1.36.0", "3.5.1", "3.5.2"] and "/api/desktop/download" in ver_resp.json().get("download_url", "") and len(ver_resp.json().get("changelog", [])) >= 3, ver_resp.text)
+          ver_resp.status_code == 200 and ver_resp.json().get("version") in ["1.28.0", "1.35.0", "1.36.0", "3.5.1", "3.5.2", "3.5.3", "3.5.4"] and "/api/desktop/download" in ver_resp.json().get("download_url", "") and len(ver_resp.json().get("changelog", [])) >= 3, ver_resp.text)
 
     dl_exe = c.get("/api/desktop/download")
     check("GET /api/desktop/download 免登录直连下载 Windows 单文件 EXE",

@@ -8,7 +8,7 @@
 #include <wchar.h>
 
 #ifndef FLA_VERSION
-#define FLA_VERSION L"3.0.0"
+#define FLA_VERSION L"3.5.4"
 #endif
 
 static wchar_t g_self[MAX_PATH], g_rt[MAX_PATH], g_err[512];

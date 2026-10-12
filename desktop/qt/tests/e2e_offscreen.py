@@ -27,7 +27,7 @@ from fla_qt import core  # noqa: E402
 
 B = "http://127.0.0.1:8306"
 core.full_url = lambda p: p if p.startswith("http") else B + p
-from fla_qt.stage import Stage, load_ink  # noqa: E402
+from fla_qt.stage import Stage, load_ink, _screen_key  # noqa: E402
 from fla_qt.window import MainWindow  # noqa: E402
 
 out = sys.argv[1] if len(sys.argv) > 1 else "/tmp/shots"
@@ -70,6 +70,22 @@ ok["server_locked"] = core.cfg.server in core.ALLOWED
 st.start()
 ok["desk_dock"] = st.desk_dock.isVisible() and not st.ppt_dock.isVisible()
 ok["desk_no_pagelabel"] = not st.desk_dock.page_label.isVisible()
+# Simulate a display shrinking after the toolbar was positioned on the former large mode.
+scr = QApplication.primaryScreen()
+work = scr.availableGeometry()
+key = _screen_key(scr)
+original_dock_rect = st.desk_dock.frameGeometry()
+st._screen_bounds[key] = type(work)(work.x(), work.y(), max(1920, work.width()), max(1080, work.height()))
+st.desk_dock.setGeometry(work.x() + max(1700, work.width() - 1),
+                         work.y() + max(900, work.height() - 1),
+                         st.desk_dock.width(), st.desk_dock.height())
+st._floating_screens[id(st.desk_dock)] = key
+st._refresh_screen_layout()
+app.processEvents()
+reflowed = st.desk_dock.frameGeometry()
+ok["screen_reflow"] = work.contains(reflowed.topLeft()) and work.contains(reflowed.bottomRight())
+st.desk_dock.setGeometry(original_dock_rect)
+app.processEvents()
 st.ov.strokes().append(stroke([(10, 10), (50, 50)]))
 st.handle("next")
 ok["desk_next_keeps_canvas"] = st.ov.page == 1 and len(st.ov.strokes()) == 1

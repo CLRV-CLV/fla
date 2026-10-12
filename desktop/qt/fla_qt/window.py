@@ -5,15 +5,16 @@ import os
 import threading
 import webbrowser
 
-from PyQt5.QtCore import QObject, Qt, QTimer, QUrl, pyqtSignal
-from PyQt5.QtGui import QDesktopServices, QTextCursor
-from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QCheckBox, QFileDialog, QHBoxLayout, QHeaderView,
-                             QPlainTextEdit, QSystemTrayIcon, QTableWidgetItem, QVBoxLayout, QWidget)
+from PyQt5.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl, pyqtSignal
+from PyQt5.QtGui import QDesktopServices, QPalette
+from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
+                             QListWidgetItem, QPlainTextEdit, QSystemTrayIcon, QTableWidgetItem, QVBoxLayout, QWidget)
 from qfluentwidgets import FluentIcon as FIF
-from qfluentwidgets import (Action, BodyLabel, ComboBox, CaptionLabel, CardWidget, FluentWindow, IconWidget, InfoBar,
-                            InfoBarPosition, LineEdit, MessageBox, NavigationItemPosition, PasswordLineEdit,
-                            PrimaryPushButton, ProgressBar, PushButton, RoundMenu, ScrollArea, SearchLineEdit,
-                            StrongBodyLabel, SubtitleLabel, SwitchButton, TableWidget, TitleLabel)
+from qfluentwidgets import (Action, BodyLabel, CheckBox, ComboBox, CaptionLabel, CardWidget, FluentWindow,
+                            IconWidget, InfoBar, InfoBarPosition, LineEdit, ListWidget, MessageBox,
+                            NavigationItemPosition, PasswordLineEdit, PrimaryPushButton, ProgressBar, PushButton,
+                            RoundMenu, ScrollArea, SearchLineEdit, StrongBodyLabel, SubtitleLabel, SwitchButton,
+                            TableWidget, TextBrowser, TitleLabel, TransparentToolButton)
 
 from . import core, experiment_extensions
 from .core import cfg
@@ -334,16 +335,167 @@ class _AIInput(QPlainTextEdit):
         super().keyPressEvent(event)
 
 
-class AIPage(Page):
-    """桌面端复用服务端 AI 模型、权限和 SSE 对话接口。"""
+class _AIMessageBubble(QWidget):
+    """Theme-aware message card; assistant content uses Qt's native Markdown renderer."""
+
+    def __init__(self, role, text="", parent=None):
+        super().__init__(parent)
+        self.role = role
+        self.content = ""
+        self._fitting = False
+        self.setObjectName("aiMessageRow")
+
+        row = QHBoxLayout(self)
+        row.setContentsMargins(2, 3, 2, 3)
+        row.setSpacing(10)
+        self.avatar = BodyLabel("AI" if role == "assistant" else "我", self)
+        self.avatar.setAlignment(Qt.AlignCenter)
+        self.avatar.setFixedSize(34, 34)
+
+        self.card = CardWidget(self)
+        self.card.setObjectName("aiBubbleAssistant" if role == "assistant" else "aiBubbleUser")
+        self.card.setMaximumWidth(720)
+        self.card.setMinimumWidth(180 if role == "assistant" else 76)
+        card_layout = QVBoxLayout(self.card)
+        card_layout.setContentsMargins(14, 10, 14, 12)
+        card_layout.setSpacing(7)
+
+        header = QHBoxLayout()
+        header.setSpacing(6)
+        name = StrongBodyLabel("FLA 助教" if role == "assistant" else "你", self.card)
+        header.addWidget(name)
+        header.addStretch(1)
+        self.copy_btn = TransparentToolButton(FIF.COPY, self.card)
+        self.copy_btn.setToolTip("复制内容")
+        self.copy_btn.setFixedSize(28, 28)
+        self.copy_btn.clicked.connect(lambda _=False: QApplication.clipboard().setText(self.content))
+        header.addWidget(self.copy_btn)
+        card_layout.addLayout(header)
+
+        self.body = TextBrowser(self.card)
+        self.body.setReadOnly(True)
+        self.body.setOpenLinks(False)
+        self.body.setOpenExternalLinks(False)
+        self.body.setFrameShape(QFrame.NoFrame)
+        self.body.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.body.setMinimumHeight(26)
+        self.body.setMinimumWidth(70 if role == "user" else 220)
+        self.body.document().setDocumentMargin(0)
+        self.body.anchorClicked.connect(self._open_link)
+        card_layout.addWidget(self.body)
+
+        if role == "assistant":
+            row.addWidget(self.avatar, 0, Qt.AlignTop)
+            row.addWidget(self.card, 1, Qt.AlignTop)
+        else:
+            row.addStretch(1)
+            row.addWidget(self.card, 0, Qt.AlignTop)
+            row.addWidget(self.avatar, 0, Qt.AlignTop)
+        self._apply_palette()
+        self.set_content(text, markdown=(role == "assistant"))
+
+    def _apply_palette(self):
+        palette = QApplication.palette()
+        base = palette.color(QPalette.Base).name()
+        alternate = palette.color(QPalette.AlternateBase).name()
+        text = palette.color(QPalette.Text).name()
+        muted = palette.color(QPalette.PlaceholderText).name()
+        border = palette.color(QPalette.Mid).name()
+        accent = palette.color(QPalette.Highlight).name()
+        accent_text = palette.color(QPalette.HighlightedText).name()
+        if self.role == "assistant":
+            bg, fg, outline = base, text, border
+            avatar_bg, avatar_fg = alternate, text
+        else:
+            bg, fg, outline = accent, accent_text, accent
+            avatar_bg, avatar_fg = alternate, text
+        self.card.setStyleSheet(
+            f"QWidget#{self.card.objectName()} {{ background-color:{bg}; color:{fg}; "
+            f"border:1px solid {outline}; border-radius:12px; }}"
+            f"QWidget#{self.card.objectName()} QLabel {{ color:{fg}; background:transparent; border:0; }}"
+        )
+        self.avatar.setStyleSheet(
+            f"QLabel {{ background-color:{avatar_bg}; color:{avatar_fg}; border-radius:17px; "
+            f"font-weight:600; }}"
+        )
+        self.body.setPalette(palette)
+        self.body.setStyleSheet(f"QTextBrowser {{ background:transparent; border:0; color:{fg}; }}")
+        self.body.document().setDefaultStyleSheet(
+            f"body {{ color:{fg}; font-family:'Microsoft YaHei UI','Segoe UI',sans-serif; font-size:14px; }}"
+            f"p {{ margin:0 0 8px 0; }} h1,h2,h3 {{ margin:10px 0 6px 0; }}"
+            f"a {{ color:{accent}; text-decoration:none; }}"
+            f"pre, code {{ font-family:Consolas,'Cascadia Code',monospace; }}"
+            f"pre {{ background:{alternate}; padding:8px; border-radius:6px; }}"
+            f"blockquote {{ color:{muted}; border-left:3px solid {border}; margin:6px 0; padding-left:9px; }}"
+            f"th,td {{ border:1px solid {border}; padding:4px 7px; }}"
+        )
+
+    def set_content(self, text, markdown=True):
+        self.content = str(text or "")
+        if markdown and self.role == "assistant":
+            self.body.setMarkdown(self.content)
+        else:
+            self.body.setPlainText(self.content)
+        self._fit_body()
+        QTimer.singleShot(0, self._fit_body)
+
+    def _fit_body(self):
+        if self._fitting or not hasattr(self, "body"):
+            return
+        self._fitting = True
+        try:
+            width = max(80, self.body.viewport().width())
+            self.body.document().setTextWidth(width)
+            height = int(self.body.document().documentLayout().documentSize().height()) + 12
+            target = max(28, height)
+            if self.body.height() != target:
+                self.body.setFixedHeight(target)
+        finally:
+            self._fitting = False
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        QTimer.singleShot(0, self._fit_body)
+
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            self._apply_palette()
+
+    def _open_link(self, url):
+        if url.scheme().lower() in ("http", "https"):
+            QDesktopServices.openUrl(url)
+
+
+class AIPage(QWidget):
+    """原生 FLA AI 工作台，复用服务端的模型权限、历史对话和 SSE 流式接口。"""
+
+    SUGGESTIONS = (
+        "帮我设计一节 40 分钟的课程",
+        "用学生能听懂的话解释一个概念",
+        "根据课文生成 5 道随堂小测",
+    )
+
     def __init__(self, win):
-        super().__init__("ai", "AI 助教", "使用管理员开放的模型；对话会保存到当前账号。")
+        super().__init__()
+        self.setObjectName("ai")
         self.win = win
         self.models = []
+        self.conversations = []
         self.conversation_id = None
+        self._loaded_conversation_id = None
+        self._pending_model_id = None
+        self._load_generation = 0
+        self._conversation_generation = 0
+        self._model_generation = 0
+        self._message_widgets = []
+        self.current_bubble = None
+        self.current_prompt = ""
         self.transcript = ""
         self.answer = ""
         self.busy = False
+        self.loading_history = False
         self.stream_error = False
         self.events = _AIEvents()
         self.events.event.connect(self._on_stream_event)
@@ -351,98 +503,448 @@ class AIPage(Page):
         self.flush_timer.setInterval(50)
         self.flush_timer.timeout.connect(self._flush_answer)
 
-        row = QHBoxLayout()
-        self.model = ComboBox()
-        self.model.setMinimumWidth(260)
-        self.model.addItem("选择 AI 模型", userData=None)
-        refresh_btn = PushButton(FIF.SYNC, "刷新模型")
-        refresh_btn.clicked.connect(self.refresh_models)
-        new_btn = PushButton(FIF.ADD, "新对话")
-        new_btn.clicked.connect(self.new_conversation)
-        row.addWidget(BodyLabel("模型"))
-        row.addWidget(self.model)
-        self.search_check = QCheckBox("联网搜索")
-        self.search_check.setToolTip("本轮问题会发送给 DuckDuckGo 搜索网页；请勿搜索个人或敏感信息。")
-        row.addWidget(self.search_check)
-        row.addWidget(refresh_btn)
-        row.addStretch(1)
-        row.addWidget(new_btn)
-        self.lay.addLayout(row)
-        search_notice = CaptionLabel("仅勾选后才联网；开启时本轮问题会发送给 DuckDuckGo，请勿输入个人或敏感信息。")
-        search_notice.setWordWrap(True)
-        search_notice.setTextColor("#666666", "#aaaaaa")
-        self.lay.addWidget(search_notice)
+        root = QHBoxLayout(self)
+        root.setContentsMargins(22, 18, 22, 18)
+        root.setSpacing(14)
 
+        # 左侧会话导航：使用与 FLA 其他页面相同的 Fluent 卡片和列表控件。
+        self.sidebar = CardWidget(self)
+        self.sidebar.setMinimumWidth(190)
+        self.sidebar.setMaximumWidth(245)
+        self.sidebar.setFixedWidth(220)
+        side = QVBoxLayout(self.sidebar)
+        side.setContentsMargins(14, 14, 14, 12)
+        side.setSpacing(10)
+        side_head = QHBoxLayout()
+        side_head.addWidget(StrongBodyLabel("对话", self.sidebar))
+        side_head.addStretch(1)
+        self.refresh_history_btn = TransparentToolButton(FIF.SYNC, self.sidebar)
+        self.refresh_history_btn.setToolTip("刷新历史对话")
+        self.refresh_history_btn.clicked.connect(self.refresh_conversations)
+        side_head.addWidget(self.refresh_history_btn)
+        side.addLayout(side_head)
+        self.new_btn = PrimaryPushButton(FIF.ADD, "新对话", self.sidebar)
+        self.new_btn.clicked.connect(self.new_conversation)
+        side.addWidget(self.new_btn)
+        self.conv_list = ListWidget(self.sidebar)
+        self.conv_list.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.conv_list.setWordWrap(True)
+        self.conv_list.setContextMenuPolicy(Qt.CustomContextMenu)
+        self.conv_list.currentRowChanged.connect(self._pick_conversation)
+        self.conv_list.customContextMenuRequested.connect(self._conversation_menu)
+        side.addWidget(self.conv_list, 1)
+        self.history_tip = CaptionLabel("历史对话会保存到当前账号。", self.sidebar)
+        self.history_tip.setWordWrap(True)
+        side.addWidget(self.history_tip)
+        root.addWidget(self.sidebar)
+
+        main = QVBoxLayout()
+        main.setSpacing(10)
+        root.addLayout(main, 1)
+        main_head = QHBoxLayout()
+        title_col = QVBoxLayout()
+        title_col.setSpacing(1)
+        title_col.addWidget(TitleLabel("AI 助教"))
+        title_col.addWidget(CaptionLabel("FLA 原生工作台 · 支持 Markdown 与流式回复"))
+        main_head.addLayout(title_col)
+        main_head.addStretch(1)
         self.status = CaptionLabel("登录后使用 AI 助教")
-        self.status.setTextColor("#666666", "#aaaaaa")
-        self.lay.addWidget(self.status)
-        self.output = QPlainTextEdit()
-        self.output.setReadOnly(True)
-        self.output.setPlaceholderText("AI 对话会显示在这里。")
-        self.output.setMinimumHeight(300)
-        self.lay.addWidget(self.output, 1)
+        self.status.setWordWrap(True)
+        main_head.addWidget(self.status, 0, Qt.AlignRight | Qt.AlignVCenter)
+        main.addLayout(main_head)
 
-        row = QHBoxLayout()
-        self.input = _AIInput()
-        self.input.setPlaceholderText("输入问题，Enter 发送，Shift+Enter 换行")
+        controls = CardWidget(self)
+        controls_row = QHBoxLayout(controls)
+        controls_row.setContentsMargins(14, 9, 14, 9)
+        controls_row.setSpacing(8)
+        controls_row.addWidget(BodyLabel("模型", controls))
+        self.model = ComboBox(controls)
+        self.model.setMinimumWidth(150)
+        self.model.setMaximumWidth(300)
+        self.model.addItem("选择 AI 模型", userData=None)
+        self.model.currentIndexChanged.connect(self._sync_controls)
+        controls_row.addWidget(self.model, 1)
+        self.search_check = CheckBox("联网搜索", controls)
+        self.search_check.setToolTip("仅本轮问题会发送给 DuckDuckGo 搜索网页；请勿搜索个人或敏感信息。")
+        controls_row.addWidget(self.search_check)
+        self.model_refresh = TransparentToolButton(FIF.SYNC, controls)
+        self.model_refresh.setToolTip("刷新可用模型")
+        self.model_refresh.clicked.connect(self.refresh_models)
+        controls_row.addWidget(self.model_refresh)
+        main.addWidget(controls)
+        self.search_notice = CaptionLabel(
+            "默认关闭联网搜索；开启后，本轮问题会发送给 DuckDuckGo。请勿输入个人或敏感信息。"
+        )
+        self.search_notice.setWordWrap(True)
+        self.search_notice.setTextColor("#666666", "#aaaaaa")
+        main.addWidget(self.search_notice)
+
+        title_row = QHBoxLayout()
+        self.current_title = SubtitleLabel("新对话")
+        title_row.addWidget(self.current_title)
+        title_row.addStretch(1)
+        self.message_hint = CaptionLabel("Enter 发送 · Shift+Enter 换行")
+        self.message_hint.setTextColor("#666666", "#aaaaaa")
+        title_row.addWidget(self.message_hint)
+        main.addLayout(title_row)
+
+        self.history_scroll = ScrollArea(self)
+        self.history_scroll.setWidgetResizable(True)
+        self.history_scroll.enableTransparentBackground()
+        self.history_canvas = QWidget()
+        self.message_layout = QVBoxLayout(self.history_canvas)
+        self.message_layout.setContentsMargins(4, 4, 8, 8)
+        self.message_layout.setSpacing(8)
+        self.empty_row = QWidget(self.history_canvas)
+        empty_row_layout = QHBoxLayout(self.empty_row)
+        empty_row_layout.setContentsMargins(0, 0, 0, 0)
+        empty_row_layout.addStretch(1)
+        self.empty_card = CardWidget(self.empty_row)
+        self.empty_card.setMaximumWidth(620)
+        empty = QVBoxLayout(self.empty_card)
+        empty.setContentsMargins(22, 20, 22, 20)
+        empty.setSpacing(9)
+        empty.addWidget(StrongBodyLabel("你好，我是 FLA 助教", self.empty_card))
+        welcome = BodyLabel("可以协助备课、解释知识点、整理材料或生成课堂练习。选择模型后，输入问题即可开始。", self.empty_card)
+        welcome.setWordWrap(True)
+        empty.addWidget(welcome)
+        suggestions = QVBoxLayout()
+        suggestions.setSpacing(6)
+        for prompt in self.SUGGESTIONS:
+            button = PushButton(prompt, self.empty_card)
+            button.setToolTip("填入输入框，不会自动发送")
+            button.clicked.connect(lambda _=False, p=prompt: self._use_suggestion(p))
+            suggestions.addWidget(button)
+        empty.addLayout(suggestions)
+        empty_row_layout.addWidget(self.empty_card, 1)
+        empty_row_layout.addStretch(1)
+        self.message_layout.addWidget(self.empty_row)
+        self.message_layout.addStretch(1)
+        self.history_scroll.setWidget(self.history_canvas)
+        self.history_scroll.setMinimumHeight(170)
+        main.addWidget(self.history_scroll, 1)
+
+        self.composer = CardWidget(self)
+        composer_lay = QVBoxLayout(self.composer)
+        composer_lay.setContentsMargins(12, 11, 12, 10)
+        composer_lay.setSpacing(7)
+        self.input = _AIInput(self.composer)
+        self.input.setPlaceholderText("向 FLA 助教提问…（Enter 发送，Shift+Enter 换行）")
+        self.input.setMinimumHeight(72)
         self.input.setMaximumHeight(130)
-        self.input.setMinimumHeight(82)
+        self.input.textChanged.connect(self._update_char_count)
         self.input.send_requested.connect(self.send)
-        self.send_btn = PrimaryPushButton(FIF.SEND, "发送")
+        composer_lay.addWidget(self.input)
+        composer_footer = QHBoxLayout()
+        self.composer_tip = CaptionLabel("回答会以 Markdown 显示；对话会保存到当前账号。", self.composer)
+        self.composer_tip.setTextColor("#666666", "#aaaaaa")
+        composer_footer.addWidget(self.composer_tip)
+        composer_footer.addStretch(1)
+        self.char_count = CaptionLabel("0 / 8000", self.composer)
+        composer_footer.addWidget(self.char_count)
+        self.send_btn = PrimaryPushButton(FIF.SEND, "发送", self.composer)
+        self.send_btn.setToolTip("Enter 发送；Shift+Enter 换行")
         self.send_btn.clicked.connect(self.send)
-        row.addWidget(self.input, 1)
-        row.addWidget(self.send_btn)
-        self.lay.addLayout(row)
+        composer_footer.addWidget(self.send_btn)
+        composer_lay.addLayout(composer_footer)
+        main.addWidget(self.composer)
+
+        self._sync_controls()
+        self.refresh()
+
+    # ---- UI 状态与主题
+    def changeEvent(self, event):
+        super().changeEvent(event)
+        if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
+            for bubble in self._message_widgets:
+                bubble._apply_palette()
+
+    def _sync_controls(self, *_args):
+        logged = bool(cfg.token)
+        ready = logged and self.model.currentData() is not None and bool(self.models)
+        self.send_btn.setEnabled(ready and not self.busy and not self.loading_history
+                                 and bool(self.input.toPlainText().strip()))
+        self.input.setEnabled(not self.busy and not self.loading_history)
+        self.model.setEnabled(logged and not self.busy and not self.loading_history)
+        self.model_refresh.setEnabled(logged and not self.busy and not self.loading_history)
+        self.search_check.setEnabled(not self.busy)
+        self.new_btn.setEnabled(not self.busy)
+        self.conv_list.setEnabled(logged and not self.busy)
+        self.refresh_history_btn.setEnabled(logged and not self.busy)
+        self.send_btn.setText("生成中…" if self.busy else "发送")
+
+    def _update_char_count(self):
+        length = len(self.input.toPlainText())
+        self.char_count.setText(f"{length} / 8000")
+        self._sync_controls()
+
+    def _set_status(self, text):
+        self.status.setText(text)
+
+    # ---- 模型与历史
+    def refresh(self):
         self.refresh_models()
+        self.refresh_conversations()
 
     def refresh_models(self, *_args):
+        self._model_generation += 1
+        generation = self._model_generation
         if not cfg.token:
-            self.status.setText("请先到「设置」登录账号")
+            self.models = []
+            self._pending_model_id = None
             self.model.clear()
             self.model.addItem("登录后加载模型", userData=None)
-            self.send_btn.setEnabled(False)
+            self._set_status("请先到「设置」登录账号")
+            self._sync_controls()
             return
-        self.status.setText("正在获取可用模型…")
-        run_async(lambda: core.api("GET", "/api/ai/models"), self._models_loaded)
-
-    def _models_loaded(self, result):
-        status, data = result if isinstance(result, tuple) else (0, {})
-        if status != 200 or not isinstance(data, dict):
-            self.status.setText((data or {}).get("detail", "无法加载 AI 模型，请检查网络或登录状态"))
-            self.send_btn.setEnabled(False)
-            return
-        self.models = data.get("items") or []
+        preferred = self.model.currentData()
+        if preferred is not None:
+            self._pending_model_id = preferred
         self.model.clear()
-        if not data.get("enabled"):
-            self.model.addItem("AI 功能已关闭", userData=None)
-            self.status.setText("AI 功能已由管理员关闭")
-            self.send_btn.setEnabled(False)
+        self.model.addItem("正在加载模型…", userData=None)
+        self.model_refresh.setEnabled(False)
+        self._set_status("正在加载可用模型…")
+
+        def done(result):
+            if generation != self._model_generation:
+                return
+            status, data = result if isinstance(result, tuple) else (0, {})
+            if status != 200 or not isinstance(data, dict):
+                self.models = []
+                self.model.clear()
+                self.model.addItem("模型加载失败", userData=None)
+                detail = (data or {}).get("detail", "无法连接服务器") if isinstance(data, dict) else "无法连接服务器"
+                self._set_status(str(detail))
+                self._sync_controls()
+                return
+            self.models = data.get("items") or []
+            self.model.clear()
+            if not data.get("enabled"):
+                self.model.addItem("AI 功能已关闭", userData=None)
+                self._set_status("AI 功能已由管理员关闭")
+                self._sync_controls()
+                return
+            if not self.models:
+                self.model.addItem("暂无可用模型", userData=None)
+                self._set_status("管理员尚未为你的用户组开放模型")
+                self._sync_controls()
+                return
+            available = set()
+            for item in self.models:
+                model_id = item.get("id")
+                available.add(model_id)
+                label = item.get("name") or item.get("model") or "AI 模型"
+                if item.get("channel"):
+                    label += " · " + str(item["channel"])
+                self.model.addItem(label, userData=model_id)
+            desired = self._pending_model_id
+            if desired not in available:
+                desired = self._models_for_current_conversation()
+            index = self.model.findData(desired) if desired is not None else -1
+            self.model.setCurrentIndex(index if index >= 0 else 0)
+            self._pending_model_id = None
+            self._set_status("模型已就绪 · 对话支持流式输出")
+            self._sync_controls()
+        run_async(lambda: core.api("GET", "/api/ai/models"), done)
+
+    def _models_for_current_conversation(self):
+        return getattr(self, "_conversation_model_id", None)
+
+    def _select_model(self, model_id):
+        if model_id is None:
             return
-        for item in self.models:
-            label = item.get("name") or item.get("model") or "AI 模型"
-            if item.get("channel"):
-                label += "（" + item["channel"] + "）"
-            self.model.addItem(label, userData=item.get("id"))
-        if not self.models:
-            self.model.addItem("暂无可用模型", userData=None)
-            self.status.setText("管理员尚未为你的用户组开放 AI 模型")
-            self.send_btn.setEnabled(False)
+        idx = self.model.findData(model_id)
+        if idx >= 0:
+            self.model.setCurrentIndex(idx)
         else:
-            self.status.setText("可以开始提问；支持流式输出。")
-            self.send_btn.setEnabled(True)
+            self._pending_model_id = model_id
+
+    def refresh_conversations(self, *_args, select_id=None):
+        self._conversation_generation += 1
+        generation = self._conversation_generation
+        if not cfg.token:
+            self._load_generation += 1
+            self.loading_history = False
+            self.busy = False
+            self.flush_timer.stop()
+            self.current_bubble = None
+            self.conversation_id = None
+            self._loaded_conversation_id = None
+            self._conversation_model_id = None
+            self.current_prompt = ""
+            self.answer = ""
+            self.transcript = ""
+            self.input.clear()
+            self._clear_messages()
+            self.current_title.setText("新对话")
+            self.conversations = []
+            self.conv_list.clear()
+            self.history_tip.setText("登录后可查看已保存的对话。")
+            self._sync_controls()
+            return
+        selected = self.conversation_id if select_id is None else select_id
+        self.history_tip.setText("正在加载历史对话…")
+
+        def done(result):
+            if generation != self._conversation_generation:
+                return
+            status, data = result if isinstance(result, tuple) else (0, {})
+            if status != 200 or not isinstance(data, dict):
+                self.history_tip.setText("历史对话暂不可用")
+                return
+            self.conversations = data.get("items") or []
+            self.conv_list.blockSignals(True)
+            self.conv_list.clear()
+            selected_row = -1
+            for i, item in enumerate(self.conversations):
+                title = item.get("title") or "新对话"
+                updated = str(item.get("updated_at") or "").replace("T", " ")[:16]
+                row = QListWidgetItem(title + ("\n" + updated if updated else ""))
+                row.setData(Qt.UserRole, int(item["id"]))
+                row.setToolTip(title)
+                row.setSizeHint(QSize(188, 54))
+                self.conv_list.addItem(row)
+                if selected is not None and int(item["id"]) == int(selected):
+                    selected_row = i
+            self.conv_list.setCurrentRow(selected_row)
+            self.conv_list.blockSignals(False)
+            self.history_tip.setText("最近 200 条 · 自动保存") if self.conversations else self.history_tip.setText("还没有历史对话")
+        run_async(lambda: core.api("GET", "/api/ai/conversations"), done)
+
+    def _pick_conversation(self, row):
+        item = self.conv_list.item(row) if row >= 0 else None
+        if item is None:
+            return
+        conversation_id = int(item.data(Qt.UserRole))
+        if conversation_id == self._loaded_conversation_id:
+            return
+        if self.busy:
+            self._select_conversation_in_list(self.conversation_id)
+            return
+        self._load_conversation(conversation_id)
+
+    def _select_conversation_in_list(self, conversation_id):
+        self.conv_list.blockSignals(True)
+        row = -1
+        for i in range(self.conv_list.count()):
+            if self.conv_list.item(i).data(Qt.UserRole) == conversation_id:
+                row = i
+                break
+        self.conv_list.setCurrentRow(row)
+        self.conv_list.blockSignals(False)
+
+    def _load_conversation(self, conversation_id):
+        self._load_generation += 1
+        generation = self._load_generation
+        self.conversation_id = int(conversation_id)
+        self._loaded_conversation_id = None
+        self.loading_history = True
+        self._clear_messages()
+        self.current_title.setText("正在加载对话…")
+        self._set_status("正在恢复对话历史…")
+        self._sync_controls()
+
+        def done(result):
+            if generation != self._load_generation:
+                return
+            status, data = result if isinstance(result, tuple) else (0, {})
+            if status != 200 or not isinstance(data, dict):
+                self.loading_history = False
+                detail = (data or {}).get("detail", "无法加载对话") if isinstance(data, dict) else "无法连接服务器"
+                self.current_title.setText("对话加载失败")
+                self._set_status(str(detail))
+                self._sync_controls()
+                return
+            self.loading_history = False
+            self.conversation_id = int(data["id"])
+            self._loaded_conversation_id = self.conversation_id
+            self._conversation_model_id = data.get("model_id")
+            self.current_title.setText(data.get("title") or "新对话")
+            self._select_model(data.get("model_id"))
+            messages = data.get("messages") or []
+            for message in messages:
+                role = "assistant" if message.get("role") == "assistant" else "user"
+                self._append_message(role, message.get("content") or "", scroll=False)
+            self.empty_row.setVisible(not messages)
+            self._set_status("对话已恢复 · 继续提问即可")
+            self._scroll_to_bottom()
+            self._sync_controls()
+        run_async(lambda: core.api("GET", f"/api/ai/conversations/{conversation_id}"), done)
+
+    def _conversation_menu(self, pos):
+        item = self.conv_list.itemAt(pos)
+        if item is None or self.busy:
+            return
+        conversation_id = int(item.data(Qt.UserRole))
+        menu = RoundMenu(parent=self)
+        menu.addAction(Action(FIF.DELETE, "删除对话…", triggered=lambda: self._delete_conversation(conversation_id)))
+        menu.exec(self.conv_list.mapToGlobal(pos))
+
+    def _delete_conversation(self, conversation_id):
+        if MessageBox("删除对话", "此操作会永久删除该对话及其消息，无法撤销。确定继续吗？", self.win).exec():
+            run_async(lambda: core.api("DELETE", f"/api/ai/conversations/{conversation_id}"),
+                      lambda result: self._conversation_deleted(result, conversation_id))
+
+    def _conversation_deleted(self, result, conversation_id):
+        status, data = result if isinstance(result, tuple) else (0, {})
+        if status != 200:
+            detail = (data or {}).get("detail", "删除失败") if isinstance(data, dict) else "无法连接服务器"
+            self.win.toast(str(detail), ok=False)
+            return
+        if self.conversation_id == conversation_id:
+            self.new_conversation()
+        self.refresh_conversations()
+        self.win.toast("对话已删除")
 
     def new_conversation(self, *_args):
         if self.busy:
             return
+        self._load_generation += 1
         self.conversation_id = None
-        self.transcript = ""
+        self._loaded_conversation_id = None
+        self._conversation_model_id = None
+        self.loading_history = False
+        self._pending_model_id = None
+        self.current_bubble = None
+        self.current_prompt = ""
         self.answer = ""
-        self.output.clear()
-        self.status.setText("新对话已就绪")
+        self.transcript = ""
+        self._clear_messages()
+        self.empty_row.show()
+        self.current_title.setText("新对话")
+        self._set_status("选择模型后即可开始新对话")
+        self._select_conversation_in_list(None)
+        self.input.setFocus()
+        self._sync_controls()
+
+    def _clear_messages(self):
+        for bubble in self._message_widgets:
+            self.message_layout.removeWidget(bubble)
+            bubble.deleteLater()
+        self._message_widgets.clear()
+        self.empty_row.show()
+        self._scroll_to_bottom()
+
+    # ---- 消息显示与流式回复
+    def _append_message(self, role, text, scroll=True):
+        bubble = _AIMessageBubble(role, text, self.history_canvas)
+        self.message_layout.insertWidget(self.message_layout.count() - 1, bubble)
+        self._message_widgets.append(bubble)
+        self.empty_row.hide()
+        if scroll:
+            self._scroll_to_bottom()
+        return bubble
+
+    def _scroll_to_bottom(self):
+        QTimer.singleShot(0, lambda: self.history_scroll.verticalScrollBar().setValue(
+            self.history_scroll.verticalScrollBar().maximum()))
+
+    def _use_suggestion(self, text):
+        self.input.setPlainText(text)
         self.input.setFocus()
 
     def send(self, *_args):
-        if self.busy:
+        if self.busy or self.loading_history:
             return
         if not cfg.token:
             self.win.toast("请先登录后使用 AI 助教", ok=False)
@@ -459,8 +961,9 @@ class AIPage(Page):
             return
         self.input.clear()
         self.busy = True
-        self.send_btn.setEnabled(False)
-        self.status.setText("正在连接 AI…")
+        self.current_prompt = text
+        self._sync_controls()
+        self._set_status("正在准备对话…")
         if self.conversation_id:
             self._start_stream(self.conversation_id, text, int(model_id))
             return
@@ -468,35 +971,46 @@ class AIPage(Page):
                   lambda result: self._conversation_created(result, text, int(model_id)))
 
     def _conversation_created(self, result, text, model_id):
+        if not cfg.token:
+            self.busy = False
+            self._set_status("请重新登录后继续使用 AI 助教")
+            self._sync_controls()
+            return
         status, data = result if isinstance(result, tuple) else (0, {})
         if status != 200 or not isinstance(data, dict) or not data.get("id"):
             self.busy = False
-            self.send_btn.setEnabled(True)
-            self.status.setText("无法创建对话：" + str((data or {}).get("detail", "请重新登录或检查权限")))
+            self._set_status("无法创建对话：" + str((data or {}).get("detail", "请检查登录状态或权限")))
             self.input.setPlainText(text)
+            self._sync_controls()
             return
         self.conversation_id = int(data["id"])
+        self._loaded_conversation_id = None
+        self._conversation_model_id = model_id
+        self.current_title.setText(data.get("title") or "新对话")
+        self.refresh_conversations(select_id=self.conversation_id)
         self._start_stream(self.conversation_id, text, model_id)
 
     def _start_stream(self, conversation_id, text, model_id):
         self.transcript += "你：" + text + "\nAI："
         self.answer = ""
         self.stream_error = False
-        self._flush_answer()
-        self.status.setText("AI 正在回答…")
+        self._append_message("user", text)
+        self.current_bubble = self._append_message("assistant", "正在思考…")
+        self._set_status("AI 正在回答…")
         body = {"content": text, "model_id": model_id, "online_search": self.search_check.isChecked()}
+
         def work():
             return core.ai_stream(f"/api/ai/conversations/{conversation_id}/messages", body,
                                   on_event=lambda event: self.events.event.emit(event), timeout=180)
         run_async(work, self._stream_finished)
 
     def _on_stream_event(self, event):
-        if not isinstance(event, dict):
+        if not cfg.token or not isinstance(event, dict):
             return
         if event.get("searching"):
-            self.status.setText("正在联网搜索…")
+            self._set_status("正在联网搜索…")
         if event.get("delta"):
-            self.status.setText("AI 正在回答…")
+            self._set_status("AI 正在回答…")
             self.answer += str(event["delta"])
             if not self.flush_timer.isActive():
                 self.flush_timer.start()
@@ -507,25 +1021,43 @@ class AIPage(Page):
 
     def _flush_answer(self):
         self.flush_timer.stop()
-        self.output.setPlainText(self.transcript + self.answer)
-        cursor = self.output.textCursor()
-        cursor.movePosition(QTextCursor.End)
-        self.output.setTextCursor(cursor)
-        self.output.ensureCursorVisible()
+        if self.current_bubble is None:
+            return
+        was_bottom = self.history_scroll.verticalScrollBar().value() >= \
+                     self.history_scroll.verticalScrollBar().maximum() - 28
+        self.current_bubble.set_content(self.answer or "正在思考…", markdown=bool(self.answer))
+        if was_bottom:
+            self._scroll_to_bottom()
 
     def _stream_finished(self, result):
+        if not cfg.token:
+            self.flush_timer.stop()
+            self.answer = ""
+            self.current_bubble = None
+            self.busy = False
+            self._set_status("请重新登录后继续使用 AI 助教")
+            self._sync_controls()
+            return
         status, data = result if isinstance(result, tuple) else (0, {})
         if status != 200:
             detail = (data or {}).get("detail", "请求失败") if isinstance(data, dict) else "请求失败"
             self.answer += ("\n" if self.answer else "") + "⚠ " + str(detail)
-        if self.answer:
-            self.transcript += self.answer + "\n\n"
+            self.stream_error = True
+        if not self.answer:
+            self.answer = "（AI 没有返回内容，请重试。）"
+        if self.current_bubble is not None:
+            self.current_bubble.set_content(self.answer, markdown=True)
+        self.transcript += self.answer + "\n\n"
+        if self.conversation_id is not None:
+            self._loaded_conversation_id = self.conversation_id
+        if self.current_title.text() == "新对话" and self.current_prompt:
+            self.current_title.setText(self.current_prompt[:20])
         self.answer = ""
-        self._flush_answer()
+        self.current_bubble = None
         self.busy = False
-        self.send_btn.setEnabled(bool(self.models) and bool(cfg.token))
-        self.status.setText("回答完成" if status == 200 and not self.stream_error else "AI 请求失败")
-
+        self._set_status("回答完成" if status == 200 and not self.stream_error else "AI 请求失败")
+        self._sync_controls()
+        self.refresh_conversations(select_id=self.conversation_id)
 
 # ================================================================== 实验扩展
 class ExperimentResource(CardWidget):
@@ -916,7 +1448,7 @@ class MainWindow(FluentWindow):
             if current is self.library:
                 self.library.load()
             elif current is self.ai:
-                self.ai.refresh_models()
+                self.ai.refresh()
         self.stackedWidget.currentChanged.connect(page_changed)
         self._tray()
         r = QApplication.primaryScreen().availableGeometry()
@@ -1046,7 +1578,7 @@ class MainWindow(FluentWindow):
         self.refresh_me()
         self.home.refresh(self.bridge_ok)
         self.settings.sync()
-        self.ai.refresh_models()
+        self.ai.refresh()
         if self.stackedWidget.currentWidget() is self.library:
             self.library.load()
 

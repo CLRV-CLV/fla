@@ -5,27 +5,152 @@
 """
 from __future__ import annotations
 
+import ctypes
 import json
 import math
 import os
 import time
 
-from PyQt5.QtCore import QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRegion
+from PyQt5.QtCore import QObject, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
+from PyQt5.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRegion
 from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (BodyLabel, PrimaryPushButton, PushButton, SegmentedWidget, ToolTipFilter,
                             ToolTipPosition, TransparentToggleToolButton, TransparentToolButton)
 
 from . import core
+from .touch_swipe import classify_swipe
 
 COLORS = ["#111111", "#E53935", "#1E88E5", "#43A047", "#FDD835", "#FB8C00", "#8E24AA", "#FFFFFF"]
 PEN_WIDTHS = [("细", 3), ("中", 6), ("粗", 12)]
 ERASER_SIZES = [("小", 12), ("中", 28), ("大", 60)]
 
 
-def _screen_rect():
-    return QApplication.primaryScreen().geometry()
+def _screen_rect(screen=None, available=False):
+    screen = screen or QApplication.primaryScreen()
+    if screen is None:
+        return QRect(0, 0, 800, 600)
+    return QRect(screen.availableGeometry() if available else screen.geometry())
+
+
+def _screen_for_rect(rect):
+    screen = QApplication.screenAt(rect.center()) if rect is not None and not rect.isNull() else None
+    return screen or QApplication.primaryScreen()
+
+
+def _screen_key(screen):
+    return (screen.name() or str(id(screen))) if screen is not None else ""
+
+
+def _clamp_rect(rect, bounds, margin=8):
+    """Keep a floating widget fully reachable inside a screen/work area."""
+    rect, bounds = QRect(rect), QRect(bounds)
+    if bounds.isEmpty():
+        return rect
+    mx = min(max(0, int(margin)), max(0, (bounds.width() - 1) // 2))
+    my = min(max(0, int(margin)), max(0, (bounds.height() - 1) // 2))
+    width = min(max(1, rect.width()), max(1, bounds.width() - 2 * mx))
+    height = min(max(1, rect.height()), max(1, bounds.height() - 2 * my))
+    x = min(max(rect.x(), bounds.left() + mx), bounds.right() - mx - width + 1)
+    y = min(max(rect.y(), bounds.top() + my), bounds.bottom() - my - height + 1)
+    return QRect(x, y, width, height)
+
+
+class _MouseHookPoint(ctypes.Structure):
+    _fields_ = [("x", ctypes.c_long), ("y", ctypes.c_long)]
+
+
+class _MouseHookData(ctypes.Structure):
+    _fields_ = [("pt", _MouseHookPoint), ("mouseData", ctypes.c_ulong), ("flags", ctypes.c_ulong),
+                ("time", ctypes.c_ulong), ("dwExtraInfo", ctypes.c_size_t)]
+
+
+class _NativeRect(ctypes.Structure):
+    _fields_ = [("left", ctypes.c_long), ("top", ctypes.c_long),
+                ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
+
+
+class _TouchSwipeHook(QObject):
+    """Observe Windows' touch-generated mouse compatibility stream without consuming it."""
+    gesture = pyqtSignal(int, int, int, int, float)
+    _TOUCH_SIGNATURE = 0xFF515700
+    _TOUCH_MASK = 0xFFFFFF00
+    _WH_MOUSE_LL = 14
+    _WM_MOUSEMOVE = 0x0200
+    _WM_LBUTTONDOWN = 0x0201
+    _WM_LBUTTONUP = 0x0202
+
+    def __init__(self):
+        super().__init__()
+        self._hook = None
+        self._callback = None
+        self._user32 = None
+        self._start = None
+
+    def start(self):
+        if not core.IS_WIN or self._hook:
+            return bool(self._hook)
+        try:
+            user32 = ctypes.windll.user32
+            kernel32 = ctypes.windll.kernel32
+            callback_type = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t)
+            user32.SetWindowsHookExW.argtypes = [ctypes.c_int, callback_type, ctypes.c_void_p, ctypes.c_uint]
+            user32.SetWindowsHookExW.restype = ctypes.c_void_p
+            user32.CallNextHookEx.argtypes = [ctypes.c_void_p, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t]
+            user32.CallNextHookEx.restype = ctypes.c_ssize_t
+            user32.UnhookWindowsHookEx.argtypes = [ctypes.c_void_p]
+            user32.UnhookWindowsHookEx.restype = ctypes.c_int
+            kernel32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
+            kernel32.GetModuleHandleW.restype = ctypes.c_void_p
+            self._user32 = user32
+            self._callback = callback_type(self._hook_proc)
+            self._hook = user32.SetWindowsHookExW(
+                self._WH_MOUSE_LL, self._callback, kernel32.GetModuleHandleW(None), 0)
+            return bool(self._hook)
+        except Exception:
+            self._hook = None
+            self._callback = None
+            self._user32 = None
+            return False
+
+    def stop(self):
+        if self._hook and self._user32:
+            try:
+                self._user32.UnhookWindowsHookEx(self._hook)
+            except Exception:
+                pass
+        self._hook = None
+        self._callback = None
+        self._user32 = None
+        self._start = None
+
+    def _hook_proc(self, code, message, data_ptr):
+        if code >= 0:
+            try:
+                msg = int(message)
+                data = ctypes.cast(data_ptr, ctypes.POINTER(_MouseHookData)).contents
+                x, y = int(data.pt.x), int(data.pt.y)
+                touch = (int(data.dwExtraInfo) & self._TOUCH_MASK) == self._TOUCH_SIGNATURE
+                now = time.monotonic()
+                if msg == self._WM_LBUTTONDOWN:
+                    self._start = (x, y, now) if touch else None
+                elif self._start is not None and msg == self._WM_MOUSEMOVE:
+                    if not touch or now - self._start[2] > 1.2:
+                        self._start = None
+                elif self._start is not None and msg == self._WM_LBUTTONUP:
+                    start, self._start = self._start, None
+                    if touch:
+                        duration = now - start[2]
+                        if classify_swipe(start[:2], (x, y), duration):
+                            self.gesture.emit(start[0], start[1], x, y, duration)
+            except Exception:
+                self._start = None
+        if self._user32:
+            return self._user32.CallNextHookEx(self._hook, code, message, data_ptr)
+        return 0
+
+    def __del__(self):
+        self.stop()
 
 
 class _Card(QWidget):
@@ -602,8 +727,11 @@ class TimerWindow(_Card):
         self.label.setText(f"{m:02d}:{s:02d}")
 
     def popup(self):
-        r = _screen_rect()
-        self.move(r.center().x() - self.width() // 2, r.top() + 80)
+        screen = _screen_for_rect(self.frameGeometry()) if self.isVisible() else None
+        screen = screen or QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        area = _screen_rect(screen, available=True)
+        target = QRect(area.center().x() - self.width() // 2, area.top() + 80, self.width(), self.height())
+        self.setGeometry(_clamp_rect(target, area))
         self.show()
         self.raise_()
 
@@ -622,6 +750,8 @@ class Dock(_Card):
         self.btns = {}
         self.peer = None
         self.button_size = core.cfg.dock_size
+        self.preferred_button_size = self.button_size
+        self._positioned = False
         self.hidden_cmds = set(core.cfg.dock_hidden)
         self.page_label = QLabel("1")
         self.page_label.setMinimumWidth(44 if ppt else 28)
@@ -652,9 +782,11 @@ class Dock(_Card):
             tag.setStyleSheet("background:#111;color:#fff;border-radius:4px;padding:1px 5px;font-size:11px;font-weight:600;")
             self.bar.addWidget(tag)
             self.bar.addSpacing(4)
-        btn(FIF.LEFT_ARROW, "上一步（含动画）" if ppt else "上一页", "prev")
+        prev_tip = "上一步（含动画）；触屏向右滑动上一页" if ppt else "上一页；触屏向右滑动上一页"
+        next_tip = "下一步（含动画）；触屏向左滑动下一页" if ppt else "下一页；触屏向左滑动下一页"
+        btn(FIF.LEFT_ARROW, prev_tip, "prev")
         self.bar.addWidget(self.page_label)
-        btn(FIF.RIGHT_ARROW, "下一步（含动画）" if ppt else "下一页", "next")
+        btn(FIF.RIGHT_ARROW, next_tip, "next")
         sep()
         for icon, tip, key in [(_icon("cursor"), "鼠标（退出批注，可点击 PPT/电脑）", "mouse"),
                                (FIF.PENCIL_INK, "画笔（再点一次：颜色/粗细）", "pen"),
@@ -706,6 +838,8 @@ class Dock(_Card):
 
     def set_button_size(self, size, save=True):
         self.button_size = max(32, min(48, int(size)))
+        if save:
+            self.preferred_button_size = self.button_size
         for b in self.btns.values():
             b.setFixedSize(self.button_size, self.button_size)
         self.grip.setFixedSize(22, self.button_size)
@@ -747,6 +881,7 @@ class Dock(_Card):
         core.cfg.save()
         for dock in (self, self.peer):
             if dock:
+                dock.preferred_button_size = max(32, min(48, int(size)))
                 dock.set_button_size(size, save=False)
 
     def _choose_visibility(self, cmd, visible):
@@ -769,6 +904,7 @@ class Dock(_Card):
         for dock in (self, self.peer):
             if dock:
                 dock.hidden_cmds = set()
+                dock.preferred_button_size = 40
                 dock.apply_preferences()
                 dock.set_button_size(40, save=False)
 
@@ -782,23 +918,51 @@ class Dock(_Card):
     def set_page(self, n):
         self.page_label.setText(str(n))
 
+    def fit_to_width(self, max_width):
+        """Temporarily compact buttons on narrow displays; preserve the user's preference."""
+        preferred = max(32, min(48, int(self.preferred_button_size)))
+        candidates = [size for size in (preferred, 44, 40, 36, 32) if size <= preferred]
+        for size in candidates:
+            self.set_button_size(size, save=False)
+            if self.width() <= max_width:
+                break
+
     def popup(self):
-        r = _screen_rect()
         self.adjustSize()
-        if not self.isVisible():
-            self.move(r.center().x() - self.width() // 2, r.bottom() - self.height() - 56)
+        screen = _screen_for_rect(self.frameGeometry()) if self._positioned else None
+        screen = screen or QApplication.screenAt(QCursor.pos()) or QApplication.primaryScreen()
+        area = _screen_rect(screen, available=True)
+        self.fit_to_width(max(1, area.width() - 16))
+        if not self._positioned:
+            target = QRect(area.center().x() - self.width() // 2,
+                           area.bottom() - self.height() - 56, self.width(), self.height())
+            self._positioned = True
+        else:
+            target = _clamp_rect(self.frameGeometry(), area)
+        self.setGeometry(target)
         self.mini.hide()
         self.show()
         self.raise_()
 
     def collapse(self):
-        r = _screen_rect()
+        screen = (_screen_for_rect(self.frameGeometry()) or QApplication.screenAt(QCursor.pos())
+                  or QApplication.primaryScreen())
+        area = _screen_rect(screen, available=True)
+        self.mini.adjustSize()
+        target = QRect(area.right() - self.mini.width() - 16,
+                       area.bottom() - self.mini.height() - 120,
+                       self.mini.width(), self.mini.height())
         self.hide()
-        self.mini.move(r.right() - self.mini.width() - 16, r.bottom() - self.mini.height() - 120)
+        self.mini.setGeometry(_clamp_rect(target, area))
         self.mini.show()
         self.mini.raise_()
 
     def expand(self):
+        screen = _screen_for_rect(self.mini.frameGeometry()) or QApplication.primaryScreen()
+        area = _screen_rect(screen, available=True)
+        self.fit_to_width(max(1, area.width() - 16))
+        self.setGeometry(_clamp_rect(self.frameGeometry(), area))
+        self._positioned = True
         self.mini.hide()
         self.show()
         self.raise_()
@@ -840,13 +1004,25 @@ class Stage:
         self.desk_dock_was_visible = False
         self.floating = [self.desk_dock, self.desk_dock.mini, self.ppt_dock, self.ppt_dock.mini,
                          self.pen_pop, self.eraser_pop, self.timer]
+        self._floating_screens = {}
         for w in self.floating:
-            w.changed.connect(self.refresh_holes)
+            w.changed.connect(lambda w=w: self._floating_changed(w))
+            screen = _screen_for_rect(w.frameGeometry())
+            if screen:
+                self._floating_screens[id(w)] = _screen_key(screen)
         for d in (self.desk_dock, self.ppt_dock):
             d.command.connect(self.handle)
         self.ov.tool_changed.connect(self._tool_changed)
         self.ov.key_command.connect(self.handle)
         self.ov.pages = load_ink("desktop")
+        self._screen_bounds = {_screen_key(s): QRect(s.availableGeometry()) for s in QApplication.screens()}
+        self._screen_reflow = QTimer()
+        self._screen_reflow.setSingleShot(True)
+        self._screen_reflow.setInterval(100)
+        self._screen_reflow.timeout.connect(self._refresh_screen_layout)
+        self._watch_screen_changes()
+        self.touch_swipe = _TouchSwipeHook()
+        self.touch_swipe.gesture.connect(self._on_touch_swipe)
         # 兜底: 定时把工具栏顶到最上层 + 重算挖空 (防止任何情况下被画布盖住)
         self.guard = QTimer(interval=800, timeout=self._guard)
         self.guard.start()
@@ -865,11 +1041,91 @@ class Stage:
         if w not in self.floating:
             self.floating.append(w)
             if hasattr(w, "changed"):
-                w.changed.connect(self.refresh_holes)
+                w.changed.connect(lambda w=w: self._floating_changed(w))
         self.refresh_holes()
 
     def refresh_holes(self):
         self.ov.set_holes([w.frameGeometry() for w in self.floating if w.isVisible()])
+
+    def _floating_changed(self, widget):
+        screen = _screen_for_rect(widget.frameGeometry())
+        if screen:
+            self._floating_screens[id(widget)] = _screen_key(screen)
+        self.refresh_holes()
+
+    def _watch_screen_changes(self):
+        app = QApplication.instance()
+        if app is None:
+            return
+        self._watched_screen_ids = set()
+        for name in ("screenAdded", "screenRemoved", "primaryScreenChanged"):
+            signal = getattr(app, name, None)
+            if signal is not None:
+                signal.connect(self._schedule_screen_refresh)
+        for screen in QApplication.screens():
+            self._watch_screen(screen)
+
+    def _watch_screen(self, screen):
+        key = _screen_key(screen)
+        if screen is None or key in self._watched_screen_ids:
+            return
+        self._watched_screen_ids.add(key)
+        for name in ("geometryChanged", "availableGeometryChanged", "logicalDotsPerInchChanged"):
+            signal = getattr(screen, name, None)
+            if signal is not None:
+                signal.connect(self._schedule_screen_refresh)
+
+    def _schedule_screen_refresh(self, *_args):
+        app = QApplication.instance()
+        for screen in app.screens() if app is not None else ():
+            self._watch_screen(screen)
+        self._screen_reflow.start()
+
+    @staticmethod
+    def _relative_position(value, old_start, old_span, old_size):
+        travel = old_span - old_size
+        if travel <= 0:
+            return 0.5
+        return max(0.0, min(1.0, (value - old_start) / travel))
+
+    def _refresh_screen_layout(self):
+        screens = QApplication.screens()
+        if not screens:
+            return
+        by_key = {_screen_key(screen): screen for screen in screens}
+        primary = QApplication.primaryScreen() or screens[0]
+        current_bounds = {_screen_key(screen): QRect(screen.availableGeometry()) for screen in screens}
+
+        for widget in self.floating:
+            old_rect = QRect(widget.frameGeometry())
+            old_key = self._floating_screens.get(id(widget), "")
+            old_bounds = self._screen_bounds.get(old_key)
+            screen = by_key.get(old_key)
+            if screen is None:
+                screen = _screen_for_rect(old_rect) or primary
+            new_bounds = QRect(screen.availableGeometry())
+
+            if isinstance(widget, Dock):
+                widget.fit_to_width(max(1, new_bounds.width() - 16))
+            width, height = widget.width(), widget.height()
+            if old_bounds is not None:
+                rx = self._relative_position(old_rect.x(), old_bounds.x(), old_bounds.width(), old_rect.width())
+                ry = self._relative_position(old_rect.y(), old_bounds.y(), old_bounds.height(), old_rect.height())
+                x = new_bounds.x() + round(rx * max(0, new_bounds.width() - width))
+                y = new_bounds.y() + round(ry * max(0, new_bounds.height() - height))
+                mapped = QRect(x, y, width, height)
+            else:
+                mapped = QRect(old_rect.topLeft(), old_rect.size())
+            widget.setGeometry(_clamp_rect(mapped, new_bounds))
+            self._floating_screens[id(widget)] = _screen_key(screen)
+
+        # 重设画布并刷新遮罩；PPTWatcher 随后会用新的原生矩形校正放映区域。
+        self.ov.sync()
+        self.refresh_holes()
+        for widget in self.floating:
+            if widget.isVisible():
+                widget.raise_()
+        self._screen_bounds = current_bounds
 
     def _guard(self):
         if self.ov.isVisible():
@@ -877,6 +1133,63 @@ class Stage:
             for w in self.floating:
                 if w.isVisible():
                     w.raise_()
+
+    @staticmethod
+    def _window_process_id(user32, hwnd):
+        if not hwnd:
+            return 0
+        pid = ctypes.c_ulong(0)
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        return int(pid.value)
+
+    def _touch_point_is_content(self, x, y):
+        """Reject FLA controls and all non-content surfaces before acting on a swipe."""
+        if not core.IS_WIN or self.ov.tool != "mouse" or self.ov.board:
+            return False
+        if not (self.dock.isVisible() or self.dock.mini.isVisible()):
+            return False
+        try:
+            user32 = ctypes.windll.user32
+            user32.WindowFromPoint.argtypes = [_MouseHookPoint]
+            user32.WindowFromPoint.restype = ctypes.c_void_p
+            user32.GetForegroundWindow.restype = ctypes.c_void_p
+            user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
+            user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
+            user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_NativeRect)]
+            user32.GetWindowRect.restype = ctypes.c_int
+            point = _MouseHookPoint(int(x), int(y))
+            target = user32.WindowFromPoint(point)
+            if not target or self._window_process_id(user32, target) == os.getpid():
+                return False
+
+            rect = self.ppt.get("rect") if self.mode == "ppt" else None
+            if rect:
+                left, top, width, height = map(int, rect)
+                if not (left <= x < left + width and top <= y < top + height):
+                    return False
+
+            foreground = user32.GetForegroundWindow()
+            if not foreground or self._window_process_id(user32, foreground) == os.getpid():
+                return False
+            bounds = _NativeRect()
+            if not user32.GetWindowRect(foreground, ctypes.byref(bounds)):
+                return False
+            inside = bounds.left <= x < bounds.right and bounds.top <= y < bounds.bottom
+            if inside and self.mode != "ppt":
+                self.last_fg = foreground
+            return inside
+        except Exception:
+            return False
+
+    def _on_touch_swipe(self, x0, y0, x1, y1, duration):
+        command = classify_swipe((x0, y0), (x1, y1), duration)
+        if command is None:
+            return
+        if not self._touch_point_is_content(x0, y0) or not self._touch_point_is_content(x1, y1):
+            return
+        # Let the OS deliver the touch-up to the foreground app before injecting
+        # the page command; the hook itself always forwards every native event.
+        QTimer.singleShot(0, lambda command=command: self.handle(command))
 
     def _track_fg(self):
         if not core.IS_WIN:
@@ -916,6 +1229,7 @@ class Stage:
 
     def start(self):
         self.dock.popup()
+        self.touch_swipe.start()
         self.refresh_holes()
 
     # ---- PPT 联动
@@ -955,6 +1269,7 @@ class Stage:
         self.dock.set_tool("mouse")
         self.dock.set_board(False)
         self.dock.popup()
+        self.touch_swipe.start()
         self.refresh_holes()
 
     def _ppt_update(self, info):
@@ -970,8 +1285,10 @@ class Stage:
         if self.ov.area is not None:
             a = self.ov.area
             d = self.ppt_dock
+            d.fit_to_width(max(1, a.width() - 16))
             if not a.contains(d.frameGeometry().center()):
                 d.move(a.center().x() - d.width() // 2, a.bottom() - d.height() - 40)
+            d.setGeometry(_clamp_rect(d.frameGeometry(), a))
 
     def _leave_ppt(self):
         save_ink(self.ppt_key, self.ov.pages)
@@ -988,9 +1305,13 @@ class Stage:
         self.dock.set_tool("mouse")
         if self.desk_dock_was_visible:
             self.dock.popup()
+            self.touch_swipe.start()
+        else:
+            self.touch_swipe.stop()
         self.refresh_holes()
 
     def shutdown(self):
+        self.touch_swipe.stop()
         try:
             save_ink(self.ppt_key if self.mode == "ppt" else "desktop", self.ov.pages)
             self.watcher.stop()
@@ -1004,12 +1325,12 @@ class Stage:
         c = b.mapToGlobal(b.rect().center())
         g = self.dock.frameGeometry()
         scr = QApplication.screenAt(c) or QApplication.primaryScreen()
-        sr = scr.geometry()
-        x = min(max(sr.left() + 8, c.x() - pop.width() // 2), sr.right() - pop.width() - 8)
+        sr = _screen_rect(scr, available=True)
+        x = c.x() - pop.width() // 2
         y = g.top() - pop.height() - 10
         if y < sr.top():
             y = g.bottom() + 10
-        pop.move(x, y)
+        pop.setGeometry(_clamp_rect(QRect(x, y, pop.width(), pop.height()), sr))
         pop.show()
         pop.raise_()
 
@@ -1067,7 +1388,11 @@ class Stage:
             self.eraser_pop.hide()
             self.dock.collapse()
         elif cmd == "dock_toggle":
-            self.dock.collapse() if self.dock.isVisible() else self.dock.popup()
+            if self.dock.isVisible():
+                self.dock.collapse()
+            else:
+                self.dock.popup()
+                self.touch_swipe.start()
         elif cmd == "end":
             ov.board = False
             ov.set_tool("mouse")
@@ -1076,6 +1401,7 @@ class Stage:
             self.pen_pop.hide()
             self.eraser_pop.hide()
             self.dock.close_all()
+            self.touch_swipe.stop()
         self.refresh_holes()
         for w in self.floating:
             if w.isVisible():

@@ -11,8 +11,9 @@ from server.desktop_dist import ensure_desktop_exe
 
 router = APIRouter(prefix="/api/desktop", tags=["desktop"])
 
-CURRENT_VERSION = "3.5.4"
+CURRENT_VERSION = "3.5.5"
 CHANGELOG = [
+    "v3.5.5: 修复切换分辨率后桌面主窗口越界/尺寸异常；强化 Windows 触屏滑动识别并放行透明批注层下方内容",
     "v3.5.4: 重做桌面 AI 助教界面，适配 FLA Fluent 全局 UI；支持历史对话恢复/删除、Markdown 回复与快捷提问",
     "v3.5.3: 修复分辨率/显示器变化后舞台画布、遮罩与工具栏错位；Windows 触屏左右滑动可翻页，并过滤工具栏与批注操作",
     "v3.5.2: 实验工具改为 FLA 扩展中心，按系统/架构下载并校验离线 PhET、Tracker 和支持平台的 Avogadro；支持一键安装、打开与卸载，不再跳转项目官网",

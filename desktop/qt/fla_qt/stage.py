@@ -19,7 +19,7 @@ from qfluentwidgets import (BodyLabel, PrimaryPushButton, PushButton, SegmentedW
                             ToolTipPosition, TransparentToggleToolButton, TransparentToolButton)
 
 from . import core
-from .touch_swipe import classify_swipe
+from .touch_swipe import TouchSwipeTracker, classify_swipe
 
 COLORS = ["#111111", "#E53935", "#1E88E5", "#43A047", "#FDD835", "#FB8C00", "#8E24AA", "#FFFFFF"]
 PEN_WIDTHS = [("细", 3), ("中", 6), ("粗", 12)]
@@ -73,8 +73,6 @@ class _NativeRect(ctypes.Structure):
 class _TouchSwipeHook(QObject):
     """Observe Windows' touch-generated mouse compatibility stream without consuming it."""
     gesture = pyqtSignal(int, int, int, int, float)
-    _TOUCH_SIGNATURE = 0xFF515700
-    _TOUCH_MASK = 0xFFFFFF00
     _WH_MOUSE_LL = 14
     _WM_MOUSEMOVE = 0x0200
     _WM_LBUTTONDOWN = 0x0201
@@ -85,11 +83,14 @@ class _TouchSwipeHook(QObject):
         self._hook = None
         self._callback = None
         self._user32 = None
-        self._start = None
+        self._tracker = TouchSwipeTracker()
+        self.last_error = ""
 
     def start(self):
-        if not core.IS_WIN or self._hook:
-            return bool(self._hook)
+        if not core.IS_WIN:
+            return False
+        if self._hook:
+            return True
         try:
             user32 = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
@@ -106,11 +107,18 @@ class _TouchSwipeHook(QObject):
             self._callback = callback_type(self._hook_proc)
             self._hook = user32.SetWindowsHookExW(
                 self._WH_MOUSE_LL, self._callback, kernel32.GetModuleHandleW(None), 0)
-            return bool(self._hook)
-        except Exception:
+            if not self._hook:
+                self.last_error = f"SetWindowsHookExW failed: {ctypes.get_last_error()}"
+                self._callback = None
+                self._user32 = None
+                return False
+            self.last_error = ""
+            return True
+        except Exception as exc:
             self._hook = None
             self._callback = None
             self._user32 = None
+            self.last_error = str(exc)
             return False
 
     def stop(self):
@@ -122,29 +130,26 @@ class _TouchSwipeHook(QObject):
         self._hook = None
         self._callback = None
         self._user32 = None
-        self._start = None
+        self._tracker.reset()
 
     def _hook_proc(self, code, message, data_ptr):
         if code >= 0:
             try:
                 msg = int(message)
                 data = ctypes.cast(data_ptr, ctypes.POINTER(_MouseHookData)).contents
-                x, y = int(data.pt.x), int(data.pt.y)
-                touch = (int(data.dwExtraInfo) & self._TOUCH_MASK) == self._TOUCH_SIGNATURE
+                point = (int(data.pt.x), int(data.pt.y))
                 now = time.monotonic()
                 if msg == self._WM_LBUTTONDOWN:
-                    self._start = (x, y, now) if touch else None
-                elif self._start is not None and msg == self._WM_MOUSEMOVE:
-                    if not touch or now - self._start[2] > 1.2:
-                        self._start = None
-                elif self._start is not None and msg == self._WM_LBUTTONUP:
-                    start, self._start = self._start, None
-                    if touch:
-                        duration = now - start[2]
-                        if classify_swipe(start[:2], (x, y), duration):
-                            self.gesture.emit(start[0], start[1], x, y, duration)
+                    self._tracker.begin(point, int(data.dwExtraInfo), now)
+                elif msg == self._WM_MOUSEMOVE:
+                    # Some touch drivers omit the touch signature on intermediate moves.
+                    self._tracker.move(now)
+                elif msg == self._WM_LBUTTONUP:
+                    gesture = self._tracker.end(point, now)
+                    if gesture:
+                        self.gesture.emit(*gesture)
             except Exception:
-                self._start = None
+                self._tracker.reset()
         if self._user32:
             return self._user32.CallNextHookEx(self._hook, code, message, data_ptr)
         return 0
@@ -1023,6 +1028,7 @@ class Stage:
         self._watch_screen_changes()
         self.touch_swipe = _TouchSwipeHook()
         self.touch_swipe.gesture.connect(self._on_touch_swipe)
+        self._touch_warning_shown = False
         # 兜底: 定时把工具栏顶到最上层 + 重算挖空 (防止任何情况下被画布盖住)
         self.guard = QTimer(interval=800, timeout=self._guard)
         self.guard.start()
@@ -1143,41 +1149,56 @@ class Stage:
         return int(pid.value)
 
     def _touch_point_is_content(self, x, y):
-        """Reject FLA controls and all non-content surfaces before acting on a swipe."""
+        """Reject FLA controls and non-content surfaces before acting on a swipe.
+
+        Do not rely on WindowFromPoint here: Windows can report FLA's full-screen,
+        input-transparent annotation overlay as the hit-test target, which would
+        discard every otherwise-valid gesture.
+        """
         if not core.IS_WIN or self.ov.tool != "mouse" or self.ov.board:
             return False
         if not (self.dock.isVisible() or self.dock.mini.isVisible()):
             return False
         try:
             user32 = ctypes.windll.user32
-            user32.WindowFromPoint.argtypes = [_MouseHookPoint]
-            user32.WindowFromPoint.restype = ctypes.c_void_p
             user32.GetForegroundWindow.restype = ctypes.c_void_p
             user32.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(ctypes.c_ulong)]
             user32.GetWindowThreadProcessId.restype = ctypes.c_ulong
             user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_NativeRect)]
             user32.GetWindowRect.restype = ctypes.c_int
-            point = _MouseHookPoint(int(x), int(y))
-            target = user32.WindowFromPoint(point)
-            if not target or self._window_process_id(user32, target) == os.getpid():
+            foreground = user32.GetForegroundWindow()
+            if not foreground or self._window_process_id(user32, foreground) == os.getpid():
                 return False
+
+            def contains(hwnd):
+                bounds = _NativeRect()
+                if not hwnd or not user32.GetWindowRect(hwnd, ctypes.byref(bounds)):
+                    return False
+                return bounds.left <= x < bounds.right and bounds.top <= y < bounds.bottom
+
+            if not contains(foreground):
+                return False
+
+            # Exclude our toolbar, collapsed handle, timer, and tool popups using
+            # native rectangles (the hook coordinates are Windows physical pixels).
+            for widget in self.floating:
+                if not widget.isVisible():
+                    continue
+                try:
+                    hwnd = ctypes.c_void_p(int(widget.winId()))
+                    if contains(hwnd):
+                        return False
+                except Exception:
+                    continue
 
             rect = self.ppt.get("rect") if self.mode == "ppt" else None
             if rect:
                 left, top, width, height = map(int, rect)
                 if not (left <= x < left + width and top <= y < top + height):
                     return False
-
-            foreground = user32.GetForegroundWindow()
-            if not foreground or self._window_process_id(user32, foreground) == os.getpid():
-                return False
-            bounds = _NativeRect()
-            if not user32.GetWindowRect(foreground, ctypes.byref(bounds)):
-                return False
-            inside = bounds.left <= x < bounds.right and bounds.top <= y < bounds.bottom
-            if inside and self.mode != "ppt":
+            if self.mode != "ppt":
                 self.last_fg = foreground
-            return inside
+            return True
         except Exception:
             return False
 
@@ -1198,11 +1219,14 @@ class Stage:
             import ctypes
             from ctypes import wintypes
             u = ctypes.windll.user32
+            u.GetForegroundWindow.restype = ctypes.c_void_p
+            u.GetWindowThreadProcessId.argtypes = [ctypes.c_void_p, ctypes.POINTER(wintypes.DWORD)]
+            u.GetWindowThreadProcessId.restype = ctypes.c_ulong
             h = u.GetForegroundWindow()
             pid = wintypes.DWORD()
             u.GetWindowThreadProcessId(h, ctypes.byref(pid))
             if h and pid.value != os.getpid():
-                self.last_fg = h
+                self.last_fg = int(h)
         except Exception:
             pass
 
@@ -1213,8 +1237,12 @@ class Stage:
         try:
             import ctypes
             u = ctypes.windll.user32
-            if self.last_fg and u.IsWindow(self.last_fg):
-                u.SetForegroundWindow(self.last_fg)
+            u.IsWindow.argtypes = [ctypes.c_void_p]
+            u.IsWindow.restype = ctypes.c_int
+            u.SetForegroundWindow.argtypes = [ctypes.c_void_p]
+            u.SetForegroundWindow.restype = ctypes.c_int
+            if self.last_fg and u.IsWindow(ctypes.c_void_p(int(self.last_fg))):
+                u.SetForegroundWindow(ctypes.c_void_p(int(self.last_fg)))
         except Exception:
             pass
         core.send_key(cmd)
@@ -1229,8 +1257,21 @@ class Stage:
 
     def start(self):
         self.dock.popup()
-        self.touch_swipe.start()
+        self._start_touch_swipe()
         self.refresh_holes()
+
+    def _start_touch_swipe(self):
+        if not core.IS_WIN:
+            return False
+        started = self.touch_swipe.start()
+        if not started:
+            print("[FLA] touch swipe hook failed:", self.touch_swipe.last_error, flush=True)
+            if not self._touch_warning_shown:
+                self._touch_warning_shown = True
+                main = getattr(self.cast, "main", None)
+                if main is not None:
+                    main.toast("触屏翻页钩子未启动；请重启 FLA，或检查安全软件/系统权限是否拦截。", ok=False)
+        return started
 
     # ---- PPT 联动
     def _on_ppt(self, info: dict):
@@ -1269,7 +1310,7 @@ class Stage:
         self.dock.set_tool("mouse")
         self.dock.set_board(False)
         self.dock.popup()
-        self.touch_swipe.start()
+        self._start_touch_swipe()
         self.refresh_holes()
 
     def _ppt_update(self, info):
@@ -1305,7 +1346,7 @@ class Stage:
         self.dock.set_tool("mouse")
         if self.desk_dock_was_visible:
             self.dock.popup()
-            self.touch_swipe.start()
+            self._start_touch_swipe()
         else:
             self.touch_swipe.stop()
         self.refresh_holes()
@@ -1392,7 +1433,7 @@ class Stage:
                 self.dock.collapse()
             else:
                 self.dock.popup()
-                self.touch_swipe.start()
+                self._start_touch_swipe()
         elif cmd == "end":
             ov.board = False
             ov.set_tool("mouse")

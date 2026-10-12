@@ -14,7 +14,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 
-VERSION = "3.5.4"
+VERSION = "3.5.5"
 APP_NAME = "FLA 课堂助手"
 DEFAULT_SERVER = "https://t.clrv.top"
 SERVERS = [("https://t.clrv.top", "t.clrv.top（主线路）"), ("https://t.fyx.best", "t.fyx.best（备用线路）")]

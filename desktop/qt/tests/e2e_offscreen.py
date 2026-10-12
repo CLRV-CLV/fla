@@ -86,6 +86,21 @@ reflowed = st.desk_dock.frameGeometry()
 ok["screen_reflow"] = work.contains(reflowed.topLeft()) and work.contains(reflowed.bottomRight())
 st.desk_dock.setGeometry(original_dock_rect)
 app.processEvents()
+# The app window must also stay reachable and fit its work area after a display shrinks.
+original_main_rect = w.geometry()
+main_key = w._screen_key(scr)
+w._main_screen_key = main_key
+w._main_screen_bounds[main_key] = (work.x(), work.y(), max(1920, work.width()), max(1080, work.height()))
+w.setGeometry(work.x() + max(1700, work.width() - 1),
+              work.y() + max(900, work.height() - 1),
+              w.width(), w.height())
+w._refresh_main_screen_layout()
+app.processEvents()
+main_rect = w.frameGeometry()
+ok["main_window_reflow"] = work.contains(main_rect.topLeft()) and work.contains(main_rect.bottomRight())
+w.setGeometry(original_main_rect)
+w._refresh_main_screen_layout()
+app.processEvents()
 st.ov.strokes().append(stroke([(10, 10), (50, 50)]))
 st.handle("next")
 ok["desk_next_keeps_canvas"] = st.ov.page == 1 and len(st.ov.strokes()) == 1

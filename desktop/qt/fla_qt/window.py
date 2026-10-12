@@ -18,6 +18,7 @@ from qfluentwidgets import (Action, BodyLabel, CheckBox, ComboBox, CaptionLabel,
 
 from . import core, experiment_extensions
 from .core import cfg
+from .screen_layout import fit_window_rect
 
 
 class _Sig(QObject):
@@ -1414,6 +1415,17 @@ class MainWindow(FluentWindow):
         self.cast = CastController(stage)
         stage.cast = self.cast
         self.cast.main = self
+        self._preferred_main_size = QSize(940, 680)
+        self._base_main_minimum = QSize(680, 460)
+        self._main_screen_bounds = {}
+        self._main_screen_key = ""
+        self._watched_main_screen_keys = set()
+        self._applying_main_screen_layout = False
+        self._window_screen_signal_connected = False
+        self._main_screen_reflow_timer = QTimer(self)
+        self._main_screen_reflow_timer.setSingleShot(True)
+        self._main_screen_reflow_timer.setInterval(150)
+        self._main_screen_reflow_timer.timeout.connect(self._refresh_main_screen_layout)
         self.setWindowTitle(core.APP_NAME)
         self.resize(940, 680)
         self.home = HomePage(self)
@@ -1451,11 +1463,168 @@ class MainWindow(FluentWindow):
                 self.ai.refresh()
         self.stackedWidget.currentChanged.connect(page_changed)
         self._tray()
-        r = QApplication.primaryScreen().availableGeometry()
-        self.move(r.center().x() - self.width() // 2, r.center().y() - self.height() // 2)
+        self._initialize_main_screen_layout()
         self.refresh_all()
         QTimer.singleShot(2500, lambda: self.check_update(manual=False))
         QTimer.singleShot(300, self.load_theme)
+
+    @staticmethod
+    def _screen_key(screen):
+        if screen is None:
+            return ""
+        try:
+            name = screen.name() or ""
+            serial = screen.serialNumber() or ""
+            return f"{name}:{serial}" if serial else name or f"screen-{id(screen)}"
+        except Exception:
+            return f"screen-{id(screen)}"
+
+    @staticmethod
+    def _rect_tuple(rect):
+        return int(rect.x()), int(rect.y()), int(rect.width()), int(rect.height())
+
+    @staticmethod
+    def _screen_bounds_tuple(screen):
+        area = screen.availableGeometry()
+        return int(area.x()), int(area.y()), int(area.width()), int(area.height())
+
+    def _initialize_main_screen_layout(self):
+        app = QApplication.instance()
+        screens = app.screens() if app else []
+        self._watch_main_screen_changes()
+        screen = (QApplication.primaryScreen() if app else None) or (screens[0] if screens else None)
+        if screen is None:
+            return
+        bounds = self._screen_bounds_tuple(screen)
+        self._main_screen_key = self._screen_key(screen)
+        self._main_screen_bounds = {self._screen_key(item): self._screen_bounds_tuple(item) for item in screens}
+        bx, by, width, height = bounds
+        min_w = min(self._base_main_minimum.width(), max(1, width - 16))
+        min_h = min(self._base_main_minimum.height(), max(1, height - 16))
+        preferred = self._preferred_main_size
+        x = bx + (width - preferred.width()) // 2
+        y = by + (height - preferred.height()) // 2
+        fitted = fit_window_rect((x, y, preferred.width(), preferred.height()), bounds,
+                                 desired_size=(preferred.width(), preferred.height()),
+                                 min_size=(min_w, min_h), margin=8)
+        self._applying_main_screen_layout = True
+        try:
+            self.setMinimumSize(min_w, min_h)
+            self.setGeometry(*fitted)
+        finally:
+            self._applying_main_screen_layout = False
+
+    def _watch_main_screen_changes(self):
+        app = QApplication.instance()
+        if app is None:
+            return
+        for name in ("screenAdded", "primaryScreenChanged"):
+            signal = getattr(app, name, None)
+            if signal is not None:
+                try:
+                    signal.connect(self._schedule_main_screen_reflow)
+                except (TypeError, RuntimeError):
+                    pass
+        removed = getattr(app, "screenRemoved", None)
+        if removed is not None:
+            try:
+                removed.connect(self._main_screen_removed)
+            except (TypeError, RuntimeError):
+                pass
+        for screen in app.screens():
+            self._watch_main_screen(screen)
+
+    def _main_screen_removed(self, screen):
+        self._watched_main_screen_keys.discard(self._screen_key(screen))
+        self._schedule_main_screen_reflow()
+
+    def _watch_main_screen(self, screen):
+        if screen is None:
+            return
+        key = self._screen_key(screen)
+        if not key or key in self._watched_main_screen_keys:
+            return
+        self._watched_main_screen_keys.add(key)
+        for name in ("geometryChanged", "availableGeometryChanged", "logicalDotsPerInchChanged",
+                     "physicalDotsPerInchChanged"):
+            signal = getattr(screen, name, None)
+            if signal is not None:
+                try:
+                    signal.connect(self._schedule_main_screen_reflow)
+                except (TypeError, RuntimeError):
+                    pass
+
+    def _connect_window_screen_signal(self):
+        if self._window_screen_signal_connected:
+            return
+        handle = self.windowHandle()
+        if handle is not None:
+            try:
+                handle.screenChanged.connect(self._schedule_main_screen_reflow)
+                self._window_screen_signal_connected = True
+            except (AttributeError, TypeError, RuntimeError):
+                pass
+
+    def _schedule_main_screen_reflow(self, *_args):
+        app = QApplication.instance()
+        if app is not None:
+            for screen in app.screens():
+                self._watch_main_screen(screen)
+        self._main_screen_reflow_timer.start()
+
+    def _refresh_main_screen_layout(self):
+        app = QApplication.instance()
+        screens = app.screens() if app else []
+        if not screens:
+            return
+        current_bounds = {self._screen_key(screen): self._screen_bounds_tuple(screen) for screen in screens}
+        if self.isMaximized() or self.isFullScreen():
+            screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen() or screens[0]
+            self._main_screen_key = self._screen_key(screen)
+            self._main_screen_bounds = current_bounds
+            return
+
+        rect = self.normalGeometry() if self.isMinimized() else self.geometry()
+        rect_tuple = self._rect_tuple(rect)
+        center = rect.center()
+        screen = QApplication.screenAt(center) or QApplication.primaryScreen() or screens[0]
+        key = self._screen_key(screen)
+        bounds = current_bounds.get(key, self._screen_bounds_tuple(screen))
+        previous_key = self._main_screen_key
+        previous_bounds = self._main_screen_bounds.get(previous_key)
+        map_from = None
+        if previous_bounds is not None and (
+                (key == previous_key and previous_bounds != bounds) or previous_key not in current_bounds):
+            map_from = previous_bounds
+
+        bx, by, width, height = bounds
+        min_w = min(self._base_main_minimum.width(), max(1, width - 16))
+        min_h = min(self._base_main_minimum.height(), max(1, height - 16))
+        self._applying_main_screen_layout = True
+        try:
+            self.setMinimumSize(min_w, min_h)
+            fitted = fit_window_rect(
+                rect_tuple, bounds,
+                desired_size=(self._preferred_main_size.width(), self._preferred_main_size.height()),
+                min_size=(min_w, min_h), margin=8, old_bounds=map_from,
+            )
+            self.setGeometry(*fitted)
+        finally:
+            self._applying_main_screen_layout = False
+        self._main_screen_key = key
+        self._main_screen_bounds = current_bounds
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        if (not getattr(self, "_applying_main_screen_layout", True)
+                and not self.isMaximized() and not self.isFullScreen()):
+            size = event.size()
+            self._preferred_main_size = QSize(size.width(), size.height())
+
+    def showEvent(self, event):
+        super().showEvent(event)
+        self._connect_window_screen_signal()
+        self._schedule_main_screen_reflow()
 
     # ---- 托盘: 关窗口 = 最小化到托盘, 桥接继续工作
     def _tray(self):

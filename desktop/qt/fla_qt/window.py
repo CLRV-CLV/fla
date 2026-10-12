@@ -15,12 +15,16 @@ from qfluentwidgets import (Action, BodyLabel, ComboBox, CaptionLabel, CardWidge
                             PrimaryPushButton, ProgressBar, PushButton, RoundMenu, ScrollArea, SearchLineEdit,
                             StrongBodyLabel, SubtitleLabel, SwitchButton, TableWidget, TitleLabel)
 
-from . import core
+from . import core, experiment_extensions
 from .core import cfg
 
 
 class _Sig(QObject):
     done = pyqtSignal(object, object)
+
+
+class _ExtensionProgress(QObject):
+    changed = pyqtSignal(int, int)
 
 
 def open_web(to: str = ""):
@@ -523,53 +527,159 @@ class AIPage(Page):
         self.status.setText("回答完成" if status == 200 and not self.stream_error else "AI 请求失败")
 
 
-# ================================================================== 设置
+# ================================================================== 实验扩展
 class ExperimentResource(CardWidget):
-    def __init__(self, subject, name, description, license_text, url, parent=None):
-        super().__init__(parent)
+    def __init__(self, item, parent_page):
+        super().__init__(parent_page)
+        self.item = item
+        self.page = parent_page
+        self.extension_id = item["id"]
         row = QHBoxLayout(self)
         row.setContentsMargins(18, 15, 18, 15)
         details = QVBoxLayout()
         details.setSpacing(5)
-        title = StrongBodyLabel(f"{subject} · {name}")
-        description_label = BodyLabel(description)
-        description_label.setWordWrap(True)
-        license_label = CaptionLabel(license_text)
+        title = StrongBodyLabel(f"{item['subject']} · {item['name']}")
+        description = BodyLabel(item["description"])
+        description.setWordWrap(True)
+        self.status = CaptionLabel("")
+        self.status.setWordWrap(True)
+        self.status.setTextColor("#666666", "#aaaaaa")
+        license_label = CaptionLabel(item["license"])
         license_label.setTextColor("#666666", "#aaaaaa")
         details.addWidget(title)
-        details.addWidget(description_label)
+        details.addWidget(description)
         details.addWidget(license_label)
+        details.addWidget(self.status)
+        self.progress = ProgressBar()
+        self.progress.setRange(0, 100)
+        self.progress.hide()
+        details.addWidget(self.progress)
         row.addLayout(details, 1)
-        button = PushButton(FIF.LINK, "官方项目页 / 获取")
-        button.clicked.connect(lambda: QDesktopServices.openUrl(QUrl(url)))
-        row.addWidget(button)
+
+        actions = QVBoxLayout()
+        self.action = PrimaryPushButton("下载并安装")
+        self.action.clicked.connect(self.activate)
+        self.remove_button = PushButton("卸载扩展")
+        self.remove_button.clicked.connect(self.remove)
+        actions.addWidget(self.action)
+        actions.addWidget(self.remove_button)
+        row.addLayout(actions)
+        self._busy = False
+        self._sync_state()
+
+    def _sync_state(self):
+        available = bool(self.item["available"])
+        installed = experiment_extensions.is_installed(self.extension_id)
+        self.remove_button.setVisible(installed and available)
+        if not available:
+            if self.extension_id == "avogadro" and experiment_extensions.platform_key().startswith("windows"):
+                message = "Windows 上游仅提供需管理员授权的系统安装器，暂不作为 FLA 扩展安装。"
+            else:
+                message = f"当前系统 {experiment_extensions.platform_label()} 暂无适配安装包。"
+            self.status.setText(message)
+            self.action.setText("当前系统暂不可用")
+            self.action.setEnabled(False)
+        elif installed:
+            self.status.setText(f"已安装到 FLA 扩展目录 · {self.item['version']} · 可离线使用")
+            self.action.setText("打开")
+            self.action.setEnabled(not self._busy)
+        else:
+            self.status.setText(f"未安装 · {experiment_extensions.platform_label()} · {self.item['version']}")
+            self.action.setText("下载并安装")
+            self.action.setEnabled(not self._busy)
+
+    def _update_progress(self, received, total):
+        if total > 0:
+            self.progress.setRange(0, 100)
+            self.progress.setValue(min(100, int(received * 100 / total)))
+            self.status.setText(f"正在下载并校验… {fmt_size(received)} / {fmt_size(total)}")
+        else:
+            self.progress.setRange(0, 0)
+            self.status.setText(f"正在下载并校验… 已收取 {fmt_size(received)}")
+
+    def activate(self):
+        if self._busy:
+            return
+        if experiment_extensions.is_installed(self.extension_id):
+            self._open()
+            return
+        self._busy = True
+        self.action.setEnabled(False)
+        self.action.setText("正在准备扩展…")
+        self.progress.setRange(0, 0)
+        self.progress.show()
+        self.status.setText("连接官方分发源…")
+        signal = _ExtensionProgress()
+        signal.changed.connect(self._update_progress)
+        _keep.add(signal)
+
+        def work():
+            return experiment_extensions.install(
+                self.extension_id,
+                progress=lambda received, total: signal.changed.emit(received, total),
+            )
+
+        def done(result):
+            _keep.discard(signal)
+            self.progress.hide()
+            self._busy = False
+            if isinstance(result, tuple) and result and result[0] == 0:
+                detail = result[1].get("detail", "下载或安装失败") if isinstance(result[1], dict) else str(result[1])
+                self.status.setText(detail)
+                self.page.win.toast("扩展安装失败：" + detail, ok=False)
+                self._sync_state()
+                return
+            self._sync_state()
+            self._open()
+
+        run_async(work, done)
+
+    def _open(self):
+        try:
+            entry = experiment_extensions.open_installed(self.extension_id)
+            if self.item["kind"] == "html":
+                if not QDesktopServices.openUrl(QUrl.fromLocalFile(str(entry))):
+                    raise RuntimeError("无法调用系统默认浏览器打开离线模拟")
+            self.page.win.toast("扩展已在本机打开")
+        except Exception as exc:
+            self.page.win.toast("无法打开实验扩展：" + str(exc), ok=False)
+
+    def remove(self):
+        if MessageBox("卸载实验扩展", "将删除 FLA 扩展中心管理目录中的本地文件，不会调用系统级卸载器；若扩展仍在运行，请先关闭。继续吗？", self).exec():
+            self._busy = True
+            self.action.setEnabled(False)
+
+            def done(result):
+                self._busy = False
+                if isinstance(result, tuple) and result and result[0] == 0:
+                    detail = result[1].get("detail", "卸载失败") if isinstance(result[1], dict) else str(result[1])
+                    self.page.win.toast("卸载失败：" + detail, ok=False)
+                else:
+                    self.page.win.toast("实验扩展已从 FLA 本地目录卸载")
+                self._sync_state()
+            run_async(lambda: experiment_extensions.uninstall(self.extension_id), done)
 
 
 class ExperimentsPage(Page):
-    """由上游开源教学项目提供的可选实验工具目录，不复制或静默安装第三方程序。"""
+    """按当前系统安装、打开和卸载实验工具；资源保存在 FLA 专用扩展目录。"""
 
     def __init__(self, win):
-        super().__init__("experiments", "实验工具", "可选使用物理、化学与生物教学工具；优先选择开放源码项目。")
+        super().__init__("experiments", "实验扩展", "一键获取可离线使用的开源模拟与桌面实验工具。")
         self.win = win
         note = CardWidget()
         note_lay = QVBoxLayout(note)
         note_lay.setContentsMargins(18, 15, 18, 15)
-        note_lay.addWidget(StrongBodyLabel("安全与许可"))
-        note_text = BodyLabel("按钮只会打开项目官方页面，由教师自行选择在线使用或下载安装；FLA 不会在后台下载、静默安装或执行第三方程序。首次使用请先在受控设备上测试，并遵守各项目许可、署名要求与实验安全规范。")
+        note_lay.addWidget(StrongBodyLabel("FLA 扩展中心 · " + experiment_extensions.platform_label()))
+        note_text = BodyLabel(
+            "点击“下载并安装”后，FLA 会在后台按当前系统/处理器选择适配包，校验来源并保存到当前用户的 FLA/Extensions 目录，随后直接打开；"
+            "PhET 单文件模拟安装后可离线运行。不会把你带到上游下载页面，也不会静默提权；若系统要求授权，会由操作系统提示并需你确认。原项目署名与许可说明保留；只上架已核验的离线包，尚未核验的在线资源不会冒充一键安装项；卸载只移除 FLA 扩展目录中的内容。"
+        )
         note_text.setWordWrap(True)
         note_lay.addWidget(note_text)
         self.lay.addWidget(note)
 
-        resources = [
-            ("物理", "Tracker 视频分析与建模", "从实验视频追踪位置、速度、加速度，并将模型与真实运动对照；提供 Windows、macOS、Linux 安装包。", "GNU GPL v3 · 开源桌面软件", "https://opensourcephysics.github.io/tracker-website/"),
-            ("物理 / 化学 / 生物", "PhET 互动模拟", "科罗拉多大学的研究型互动模拟；可在线运行，部分模拟可下载离线使用。具体许可与署名要求以单个模拟页面为准。", "开放源码 · 按单个模拟项目的许可使用", "https://phet.colorado.edu/en/simulations"),
-            ("化学", "Avogadro 2", "跨平台分子编辑与三维可视化，适用于课堂分子结构演示，也可处理晶体和生物分子。", "BSD 3-Clause · 开源桌面软件", "https://avogadro.cc/"),
-            ("生物", "Virtual Genetics Lab", "遗传学与进化实验模拟，面向高中高年级及大学入门课程；项目提供在线体验。", "项目标示免费开源 · 具体子许可请查看上游", "https://vgl.umb.edu/"),
-            ("生物", "Human BioMedia 虚拟实验", "包含血液学、血型和神经生理等互动实验练习；无需安装，适合作为课堂补充。", "开放源码教学内容 · 在线使用", "https://www.humanbiomedia.org/lab-simulations/"),
-            ("生物 / 化学", "Virtual Molecular Biology Lab", "模拟凝胶电泳实验，便于课前熟悉操作流程；上游为 Java Swing 项目，属于较早期软件，需先验证当前系统兼容性。", "Academic Free License · 旧版 Java 桌面项目", "https://sourceforge.net/projects/virtbiolab/"),
-        ]
-        for item in resources:
-            self.lay.addWidget(ExperimentResource(*item))
+        for item in experiment_extensions.catalog():
+            self.lay.addWidget(ExperimentResource(item, self))
         self.lay.addStretch(1)
 
 

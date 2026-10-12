@@ -1148,9 +1148,12 @@ gen_conf
     check("缓存、更新包与课件下载使用用户可配置路径",
           "def set_storage_dir" in core_py and "def download_path" in core_py and
           'return cache_path("FLA_update.exe")' in core_py, "")
-    check("桌面提供可选的开源实验工具官方项目目录",
-          "class ExperimentsPage(Page):" in desktop_window and "Tracker" in desktop_window and
-          "Avogadro" in desktop_window and 'self.experiments, FIF.LINK, "实验工具"' in desktop_window, "")
+    experiments_py = (root / "desktop" / "qt" / "fla_qt" / "experiment_extensions.py").read_text()
+    check("实验扩展按系统安装到 FLA 扩展目录，离线模拟可安装/打开/卸载且不跳官网",
+          "class ExperimentsPage(Page):" in desktop_window and
+          "experiment_extensions.install(" in desktop_window and "FLA/Extensions" in desktop_window and
+          "phet.colorado.edu" in experiments_py and "git_blob_sha1" in experiments_py and
+          "def uninstall(" in experiments_py, "")
     lib_readme = (root / "web" / "lib" / "README.md").read_text()
     check("开源拖动缩放、离线名单解析与抽选动效库附许可证/来源说明",
           "interact.js 1.10.28" in lib_readme and "SheetJS Community Edition 0.20.3" in lib_readme and
@@ -1193,7 +1196,7 @@ gen_conf
     # v1.28 免登录桌面端分发与自动更新接口
     ver_resp = c.get("/api/desktop/version")
     check("GET /api/desktop/version 免登录版本检测接口",
-          ver_resp.status_code == 200 and ver_resp.json().get("version") in ["1.28.0", "1.35.0", "1.36.0", "3.5.1"] and "/api/desktop/download" in ver_resp.json().get("download_url", "") and len(ver_resp.json().get("changelog", [])) >= 3, ver_resp.text)
+          ver_resp.status_code == 200 and ver_resp.json().get("version") in ["1.28.0", "1.35.0", "1.36.0", "3.5.1", "3.5.2"] and "/api/desktop/download" in ver_resp.json().get("download_url", "") and len(ver_resp.json().get("changelog", [])) >= 3, ver_resp.text)
 
     dl_exe = c.get("/api/desktop/download")
     check("GET /api/desktop/download 免登录直连下载 Windows 单文件 EXE",

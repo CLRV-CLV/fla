@@ -11,8 +11,9 @@ from server.desktop_dist import ensure_desktop_exe
 
 router = APIRouter(prefix="/api/desktop", tags=["desktop"])
 
-CURRENT_VERSION = "3.5.5"
+CURRENT_VERSION = "3.5.6"
 CHANGELOG = [
+    "v3.5.6: 修复 Windows 平板触控模式下未标记触控按下事件导致滑动漏判；按显示器物理边界正确换算混合 DPI 坐标，并修复主窗口最大化后的还原位置；AI 输入框统一为 Fluent 风格",
     "v3.5.5: 修复切换分辨率后桌面主窗口越界/尺寸异常；强化 Windows 触屏滑动识别并放行透明批注层下方内容",
     "v3.5.4: 重做桌面 AI 助教界面，适配 FLA Fluent 全局 UI；支持历史对话恢复/删除、Markdown 回复与快捷提问",
     "v3.5.3: 修复分辨率/显示器变化后舞台画布、遮罩与工具栏错位；Windows 触屏左右滑动可翻页，并过滤工具栏与批注操作",

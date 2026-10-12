@@ -45,8 +45,20 @@ class TouchSwipeTracker:
     def __init__(self):
         self._start = None
 
-    def begin(self, point, extra_info: int, now: float) -> None:
-        self._start = (int(point[0]), int(point[1]), float(now)) if is_touch_mouse(extra_info) else None
+    def begin(self, point, extra_info: int, now: float, *, allow_unmarked: bool = False) -> bool:
+        """Start on a marked touch event, or on an unmarked event when the caller
+        has independently established that a touch digitizer is present.
+
+        Tablet mode and some OEM drivers do not set MI_WP_SIGNATURE on the
+        synthesized left-button-down event. Keeping that event behind the same
+        strict gate made every later move look like an ordinary mouse drag.
+        """
+        marked_touch = is_touch_mouse(extra_info)
+        if not marked_touch and not allow_unmarked:
+            self._start = None
+            return False
+        self._start = (int(point[0]), int(point[1]), float(now))
+        return True
 
     def move(self, now: float) -> None:
         if self._start is not None and float(now) - self._start[2] > MAX_SWIPE_DURATION:

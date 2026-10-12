@@ -19,6 +19,7 @@ from qfluentwidgets import (BodyLabel, PrimaryPushButton, PushButton, SegmentedW
                             ToolTipPosition, TransparentToggleToolButton, TransparentToolButton)
 
 from . import core
+from .screen_layout import physical_rect_to_logical
 from .touch_swipe import TouchSwipeTracker, classify_swipe
 
 COLORS = ["#111111", "#E53935", "#1E88E5", "#43A047", "#FDD835", "#FB8C00", "#8E24AA", "#FFFFFF"]
@@ -70,6 +71,38 @@ class _NativeRect(ctypes.Structure):
                 ("right", ctypes.c_long), ("bottom", ctypes.c_long)]
 
 
+class _MonitorInfoEx(ctypes.Structure):
+    _fields_ = [("cbSize", ctypes.c_ulong), ("rcMonitor", _NativeRect),
+                ("rcWork", _NativeRect), ("dwFlags", ctypes.c_ulong),
+                ("szDevice", ctypes.c_wchar * 32)]
+
+
+def _native_monitor_at(x, y):
+    """Return (device name, physical bounds) for the monitor at a Win32 point."""
+    if not core.IS_WIN:
+        return None
+    try:
+        user32 = ctypes.windll.user32
+        user32.MonitorFromPoint.argtypes = [_MouseHookPoint, ctypes.c_ulong]
+        user32.MonitorFromPoint.restype = ctypes.c_void_p
+        user32.GetMonitorInfoW.argtypes = [ctypes.c_void_p, ctypes.POINTER(_MonitorInfoEx)]
+        user32.GetMonitorInfoW.restype = ctypes.c_int
+        monitor = user32.MonitorFromPoint(_MouseHookPoint(int(x), int(y)), 2)  # MONITOR_DEFAULTTONEAREST
+        info = _MonitorInfoEx()
+        info.cbSize = ctypes.sizeof(info)
+        if not monitor or not user32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+            return None
+        rect = info.rcMonitor
+        return info.szDevice.rstrip("\\0"), (
+            int(rect.left), int(rect.top), int(rect.right - rect.left), int(rect.bottom - rect.top))
+    except Exception:
+        return None
+
+
+def _device_key(name):
+    return str(name or "").replace("/", "\\").strip().rstrip("\\0").casefold().split("\\")[-1]
+
+
 class _TouchSwipeHook(QObject):
     """Observe Windows' touch-generated mouse compatibility stream without consuming it."""
     gesture = pyqtSignal(int, int, int, int, float)
@@ -77,6 +110,9 @@ class _TouchSwipeHook(QObject):
     _WM_MOUSEMOVE = 0x0200
     _WM_LBUTTONDOWN = 0x0201
     _WM_LBUTTONUP = 0x0202
+    _LLMHF_INJECTED = 0x00000001
+    _SM_DIGITIZER = 94
+    _NID_TOUCH_MASK = 0x00000003
 
     def __init__(self):
         super().__init__()
@@ -84,7 +120,18 @@ class _TouchSwipeHook(QObject):
         self._callback = None
         self._user32 = None
         self._tracker = TouchSwipeTracker()
+        self._touch_digitizer_present = False
         self.last_error = ""
+
+    @classmethod
+    def _has_touch_digitizer(cls, user32):
+        try:
+            user32.GetSystemMetrics.argtypes = [ctypes.c_int]
+            user32.GetSystemMetrics.restype = ctypes.c_int
+            metrics = int(user32.GetSystemMetrics(cls._SM_DIGITIZER))
+            return bool(metrics & cls._NID_TOUCH_MASK)
+        except Exception:
+            return False
 
     def start(self):
         if not core.IS_WIN:
@@ -94,6 +141,7 @@ class _TouchSwipeHook(QObject):
         try:
             user32 = ctypes.windll.user32
             kernel32 = ctypes.windll.kernel32
+            self._touch_digitizer_present = self._has_touch_digitizer(user32)
             callback_type = ctypes.WINFUNCTYPE(ctypes.c_ssize_t, ctypes.c_int, ctypes.c_size_t, ctypes.c_ssize_t)
             user32.SetWindowsHookExW.argtypes = [ctypes.c_int, callback_type, ctypes.c_void_p, ctypes.c_uint]
             user32.SetWindowsHookExW.restype = ctypes.c_void_p
@@ -140,7 +188,14 @@ class _TouchSwipeHook(QObject):
                 point = (int(data.pt.x), int(data.pt.y))
                 now = time.monotonic()
                 if msg == self._WM_LBUTTONDOWN:
-                    self._tracker.begin(point, int(data.dwExtraInfo), now)
+                    # A tablet's compatibility down event is often *not* tagged
+                    # with MI_WP_SIGNATURE even when later events originate from touch.
+                    # In that case accept unmarked drags only when Windows reports a
+                    # touch digitizer, or when the OS marks the event as injected.
+                    allow_unmarked = (self._touch_digitizer_present
+                                      or bool(int(data.flags) & self._LLMHF_INJECTED))
+                    self._tracker.begin(point, int(data.dwExtraInfo), now,
+                                        allow_unmarked=allow_unmarked)
                 elif msg == self._WM_MOUSEMOVE:
                     # Some touch drivers omit the touch signature on intermediate moves.
                     self._tracker.move(now)
@@ -979,15 +1034,51 @@ class Dock(_Card):
 
 # ================================================================== 舞台控制器
 def _native_to_logical(rect):
-    """Windows 物理像素矩形 → Qt 逻辑坐标 (高 DPI 缩放)"""
-    from PyQt5.QtCore import QRect as _R
-    l, t, w, h = rect
-    cx, cy = l + w / 2, t + h / 2
-    for scr in QApplication.screens():
-        g, dpr = scr.geometry(), scr.devicePixelRatio()
-        if g.x() <= cx < g.x() + g.width() * dpr and g.y() <= cy < g.y() + g.height() * dpr:
-            return _R(int(g.x() + (l - g.x()) / dpr), int(g.y() + (t - g.y()) / dpr), int(w / dpr), int(h / dpr))
-    return _R(l, t, w, h)
+    """Convert a Win32 physical-pixel rect into the matching QScreen's coordinates.
+
+    The old calculation subtracted QScreen's *logical* origin from a Win32
+    physical coordinate. That only works on the primary screen at 100% scaling;
+    mixed-DPI and negative-origin monitors drifted after a display/scale change.
+    """
+    if not rect:
+        return None
+    l, t, w, h = map(int, rect)
+    screens = QApplication.screens()
+    if not screens or not core.IS_WIN:
+        return QRect(l, t, max(1, w), max(1, h))
+
+    monitor = _native_monitor_at(l + w // 2, t + h // 2)
+    screen = None
+    native_bounds = None
+    if monitor:
+        device_name, native_bounds = monitor
+        device = _device_key(device_name)
+        screen = next((s for s in screens if _device_key(s.name()) == device), None)
+        if screen is None:
+            # Some Qt platform plugins expose a different display name. Match by
+            # the physical/logical pixel dimensions and the per-monitor DPR.
+            pw, ph = native_bounds[2:]
+            screen = min(
+                screens,
+                key=lambda s: abs(s.geometry().width() * s.devicePixelRatio() - pw)
+                + abs(s.geometry().height() * s.devicePixelRatio() - ph),
+            )
+
+    screen = screen or QApplication.primaryScreen() or screens[0]
+    logical = screen.geometry()
+    scale = float(screen.devicePixelRatio() or 1.0)
+    if native_bounds is None:
+        native_bounds = (
+            round(logical.x() * scale), round(logical.y() * scale),
+            round(logical.width() * scale), round(logical.height() * scale),
+        )
+    x, y, width, height = physical_rect_to_logical(
+        (l, t, w, h),
+        (logical.x(), logical.y(), logical.width(), logical.height()),
+        native_bounds,
+        scale,
+    )
+    return QRect(x, y, width, height)
 
 
 class Stage:
@@ -1064,12 +1155,19 @@ class Stage:
         if app is None:
             return
         self._watched_screen_ids = set()
-        for name in ("screenAdded", "screenRemoved", "primaryScreenChanged"):
+        for name in ("screenAdded", "primaryScreenChanged"):
             signal = getattr(app, name, None)
             if signal is not None:
                 signal.connect(self._schedule_screen_refresh)
+        removed = getattr(app, "screenRemoved", None)
+        if removed is not None:
+            removed.connect(self._screen_removed)
         for screen in QApplication.screens():
             self._watch_screen(screen)
+
+    def _screen_removed(self, screen):
+        self._watched_screen_ids.discard(_screen_key(screen))
+        self._schedule_screen_refresh()
 
     def _watch_screen(self, screen):
         key = _screen_key(screen)
@@ -1167,8 +1265,6 @@ class Stage:
             user32.GetWindowRect.argtypes = [ctypes.c_void_p, ctypes.POINTER(_NativeRect)]
             user32.GetWindowRect.restype = ctypes.c_int
             foreground = user32.GetForegroundWindow()
-            if not foreground or self._window_process_id(user32, foreground) == os.getpid():
-                return False
 
             def contains(hwnd):
                 bounds = _NativeRect()
@@ -1176,8 +1272,17 @@ class Stage:
                     return False
                 return bounds.left <= x < bounds.right and bounds.top <= y < bounds.bottom
 
-            if not contains(foreground):
-                return False
+            rect = self.ppt.get("rect") if self.mode == "ppt" else None
+            if self.mode == "ppt" and rect:
+                # COM supplies the slideshow's physical-pixel bounds. Do not reject
+                # pointer input just because tablet mode leaves another HWND in front.
+                left, top, width, height = map(int, rect)
+                if not (left <= x < left + width and top <= y < top + height):
+                    return False
+            else:
+                if (not foreground or self._window_process_id(user32, foreground) == os.getpid()
+                        or not contains(foreground)):
+                    return False
 
             # Exclude our toolbar, collapsed handle, timer, and tool popups using
             # native rectangles (the hook coordinates are Windows physical pixels).
@@ -1191,11 +1296,6 @@ class Stage:
                 except Exception:
                     continue
 
-            rect = self.ppt.get("rect") if self.mode == "ppt" else None
-            if rect:
-                left, top, width, height = map(int, rect)
-                if not (left <= x < left + width and top <= y < top + height):
-                    return False
             if self.mode != "ppt":
                 self.last_fg = foreground
             return True

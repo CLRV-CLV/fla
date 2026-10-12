@@ -1,5 +1,27 @@
-"""Pure helpers for keeping top-level windows inside a changed display work area."""
+"""Pure helpers for display geometry and top-level window reflow."""
 from __future__ import annotations
+
+
+def physical_rect_to_logical(rect, logical_bounds, physical_bounds, scale=1.0):
+    """Map a Win32 physical-pixel rect into one QScreen's logical coordinate space.
+
+    The physical and logical virtual desktops do not share the same origin when
+    monitors have different scaling factors or negative coordinates. Anchor the
+    conversion at the matched monitor's own top-left, not at the virtual desktop
+    origin.
+    """
+    x, y, width, height = (float(v) for v in rect)
+    lx, ly, _, _ = (float(v) for v in logical_bounds)
+    px, py, _, _ = (float(v) for v in physical_bounds)
+    scale = float(scale)
+    if scale <= 0:
+        scale = 1.0
+    return (
+        round(lx + (x - px) / scale),
+        round(ly + (y - py) / scale),
+        max(1, round(width / scale)),
+        max(1, round(height / scale)),
+    )
 
 
 def fit_window_rect(rect, bounds, *, desired_size=None, min_size=(1, 1), margin=12, old_bounds=None):

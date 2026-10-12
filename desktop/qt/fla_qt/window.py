@@ -1,6 +1,7 @@
 """主窗口 (qfluentwidgets FluentWindow)"""
 from __future__ import annotations
 
+import ctypes
 import os
 import threading
 import webbrowser
@@ -8,11 +9,11 @@ import webbrowser
 from PyQt5.QtCore import QEvent, QObject, QSize, Qt, QTimer, QUrl, pyqtSignal
 from PyQt5.QtGui import QDesktopServices, QPalette
 from PyQt5.QtWidgets import (QAbstractItemView, QApplication, QFileDialog, QFrame, QHBoxLayout, QHeaderView,
-                             QListWidgetItem, QPlainTextEdit, QSystemTrayIcon, QTableWidgetItem, QVBoxLayout, QWidget)
+                             QListWidgetItem, QSystemTrayIcon, QTableWidgetItem, QVBoxLayout, QWidget)
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (Action, BodyLabel, CheckBox, ComboBox, CaptionLabel, CardWidget, FluentWindow,
                             IconWidget, InfoBar, InfoBarPosition, LineEdit, ListWidget, MessageBox,
-                            NavigationItemPosition, PasswordLineEdit, PrimaryPushButton, ProgressBar, PushButton,
+                            NavigationItemPosition, PasswordLineEdit, PlainTextEdit, PrimaryPushButton, ProgressBar, PushButton,
                             RoundMenu, ScrollArea, SearchLineEdit, StrongBodyLabel, SubtitleLabel, SwitchButton,
                             TableWidget, TextBrowser, TitleLabel, TransparentToolButton)
 
@@ -325,7 +326,7 @@ class _AIEvents(QObject):
     event = pyqtSignal(object)
 
 
-class _AIInput(QPlainTextEdit):
+class _AIInput(PlainTextEdit):
     send_requested = pyqtSignal()
 
     def keyPressEvent(self, event):
@@ -630,9 +631,11 @@ class AIPage(QWidget):
         composer_lay.setContentsMargins(12, 11, 12, 10)
         composer_lay.setSpacing(7)
         self.input = _AIInput(self.composer)
+        self.input.setObjectName("aiPromptEditor")
         self.input.setPlaceholderText("向 FLA 助教提问…（Enter 发送，Shift+Enter 换行）")
-        self.input.setMinimumHeight(72)
-        self.input.setMaximumHeight(130)
+        self.input.setMinimumHeight(76)
+        self.input.setMaximumHeight(132)
+        self._apply_input_style()
         self.input.textChanged.connect(self._update_char_count)
         self.input.send_requested.connect(self.send)
         composer_lay.addWidget(self.input)
@@ -659,6 +662,34 @@ class AIPage(QWidget):
         if event.type() in (QEvent.PaletteChange, QEvent.ApplicationPaletteChange):
             for bubble in self._message_widgets:
                 bubble._apply_palette()
+            self._apply_input_style()
+
+    def _apply_input_style(self):
+        """Match the prompt editor to FLA's Fluent text fields in both themes."""
+        if not hasattr(self, "input"):
+            return
+        palette = QApplication.palette()
+        base = palette.color(QPalette.Base).name()
+        text = palette.color(QPalette.Text).name()
+        border = palette.color(QPalette.Mid).name()
+        accent = palette.color(QPalette.Highlight).name()
+        selected = palette.color(QPalette.HighlightedText).name()
+        muted = palette.color(QPalette.PlaceholderText).name()
+        editor_palette = self.input.palette()
+        editor_palette.setColor(QPalette.Base, palette.color(QPalette.Base))
+        editor_palette.setColor(QPalette.Text, palette.color(QPalette.Text))
+        editor_palette.setColor(QPalette.PlaceholderText, palette.color(QPalette.PlaceholderText))
+        self.input.setPalette(editor_palette)
+        self.input.setStyleSheet(
+            "QPlainTextEdit#aiPromptEditor {"
+            f"background-color:{base}; color:{text}; border:1px solid {border}; "
+            "border-radius:8px; padding:10px 12px; "
+            f"selection-background-color:{accent}; selection-color:{selected}; }}"
+            "QPlainTextEdit#aiPromptEditor:focus {"
+            f"border:1px solid {accent}; }}"
+            "QPlainTextEdit#aiPromptEditor:disabled {"
+            f"color:{muted}; }}"
+        )
 
     def _sync_controls(self, *_args):
         logged = bool(cfg.token)
@@ -1578,16 +1609,15 @@ class MainWindow(FluentWindow):
         if not screens:
             return
         current_bounds = {self._screen_key(screen): self._screen_bounds_tuple(screen) for screen in screens}
-        if self.isMaximized() or self.isFullScreen():
-            screen = QApplication.screenAt(self.frameGeometry().center()) or QApplication.primaryScreen() or screens[0]
-            self._main_screen_key = self._screen_key(screen)
-            self._main_screen_bounds = current_bounds
-            return
-
-        rect = self.normalGeometry() if self.isMinimized() else self.geometry()
+        state = self.windowState()
+        was_minimized = bool(state & Qt.WindowMinimized)
+        was_maximized = bool(state & Qt.WindowMaximized)
+        was_fullscreen = bool(state & Qt.WindowFullScreen)
+        rect = self.normalGeometry() if (was_minimized or was_maximized or was_fullscreen) else self.geometry()
         rect_tuple = self._rect_tuple(rect)
-        center = rect.center()
-        screen = QApplication.screenAt(center) or QApplication.primaryScreen() or screens[0]
+        screen_probe = (self.frameGeometry().center() if was_maximized or was_fullscreen
+                        else rect.center())
+        screen = QApplication.screenAt(screen_probe) or QApplication.primaryScreen() or screens[0]
         key = self._screen_key(screen)
         bounds = current_bounds.get(key, self._screen_bounds_tuple(screen))
         previous_key = self._main_screen_key
@@ -1608,11 +1638,40 @@ class MainWindow(FluentWindow):
                 desired_size=(self._preferred_main_size.width(), self._preferred_main_size.height()),
                 min_size=(min_w, min_h), margin=8, old_bounds=map_from,
             )
-            self.setGeometry(*fitted)
+            if was_minimized or was_maximized or was_fullscreen:
+                # A maximized window can hide an out-of-bounds restore rectangle.
+                # Reflow that normal rectangle too, then restore the original state.
+                self.setWindowState(Qt.WindowNoState)
+                self.setGeometry(*fitted)
+                self.setWindowState(state)
+            else:
+                self.setGeometry(*fitted)
         finally:
             self._applying_main_screen_layout = False
         self._main_screen_key = key
         self._main_screen_bounds = current_bounds
+
+    def event(self, event):
+        result = super().event(event)
+        if event.type() == getattr(QEvent, "ScreenChangeInternal", -1):
+            if hasattr(self, "_main_screen_reflow_timer"):
+                QTimer.singleShot(0, self._schedule_main_screen_reflow)
+        return result
+
+    def nativeEvent(self, event_type, message):
+        if core.IS_WIN:
+            try:
+                from ctypes import wintypes
+                native = ctypes.cast(int(message), ctypes.POINTER(wintypes.MSG)).contents
+                if native.message in (0x007E, 0x02E0, 0x001A):  # DISPLAYCHANGE, DPI/SETTINGCHANGE
+                    QTimer.singleShot(120, self._schedule_main_screen_reflow)
+                    stage = getattr(self, "stage", None)
+                    refresh = getattr(stage, "_schedule_screen_refresh", None)
+                    if refresh is not None:
+                        QTimer.singleShot(120, refresh)
+            except Exception:
+                pass
+        return super().nativeEvent(event_type, message)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)

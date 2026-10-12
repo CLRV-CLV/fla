@@ -27,9 +27,17 @@ cp "$ROOT/web/js/jsqr.min.js" "$APP/assets/jsqr.min.js"
   --min-sdk-version 24 --target-sdk-version 34 --version-code "$VC" --version-name "$VN" \
   -o "$W/base.apk"
 
-# 2. Java → class → dex
-mkdir -p "$W/cls" "$W/dex"
-$JC -nowarn -source 1.8 -target 1.8 -encoding UTF-8 -bootclasspath "$A34" -d "$W/cls" $(find "$APP/java" -name "*.java")
+# 2. Java → class → dex (BuildConfig由Gradle生成，这里按build.gradle的版本字段补齐)
+mkdir -p "$W/cls" "$W/dex" "$W/gen/top/clrv/fla"
+cat > "$W/gen/top/clrv/fla/BuildConfig.java" <<EOF
+package top.clrv.fla;
+public final class BuildConfig {
+    public static final int VERSION_CODE = $VC;
+    public static final String VERSION_NAME = "$VN";
+    private BuildConfig() {}
+}
+EOF
+$JC -nowarn -source 1.8 -target 1.8 -encoding UTF-8 -bootclasspath "$A34" -d "$W/cls" $(find "$APP/java" -name "*.java") "$W/gen/top/clrv/fla/BuildConfig.java"
 $D8 --release --lib "$A34" --min-api 24 --output "$W/dex" $(find "$W/cls" -name "*.class")
 
 # 3. 合并 + 4 字节对齐 (resources.arsc 必须不压缩且对齐)

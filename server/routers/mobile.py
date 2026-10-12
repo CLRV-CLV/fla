@@ -17,8 +17,8 @@ router = APIRouter(prefix="/api/app", tags=["mobile"])
 ROOT = Path(__file__).resolve().parents[2]
 APK = ROOT / "desktop" / "bin" / "FLA-cast.apk"
 ICON = ROOT / "mobile" / "android" / "app" / "src" / "main" / "res" / "mipmap-xxhdpi" / "ic_launcher.png"
-APK_VERSION = "1.3.0"
-APK_CODE = 4            # 与 mobile/android/app/build.gradle versionCode 一致, App 据此自动更新
+APK_VERSION = "1.3.1"
+APK_CODE = 5            # 与 mobile/android/app/build.gradle versionCode 一致, App 据此自动更新
 IPA = ROOT / "desktop" / "bin" / "FLA-ios.ipa"
 IPA_VERSION = "1.0.0"
 

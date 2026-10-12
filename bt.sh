@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
 # FLA 宝塔面板 / 非 Docker 部署脚本
 #   首次安装:  bash bt.sh install          (装系统依赖 + Python 虚拟环境 + 开机自启服务)
-#   更新代码:  bash bt.sh pull [分支]       (默认 arena/01a0d6ff-fla, 更新后自动重启)
+#   更新代码:  bash bt.sh pull [分支]       (默认 arena/d90b37ee-fla, 更新后自动重启)
 #   宝塔Python项目模式: bash bt.sh deps (只装系统依赖) ; bash bt.sh pull (只更新代码, 然后在宝塔点重启)
 #   其它:      bash bt.sh start|stop|restart|status|logs|passwd 新密码
 # 进程由 systemd 守护 (fla.service, 崩溃自动重启/开机自启); 宝塔负责 Nginx 反代、SSL、防火墙。
 set -u
 cd "$(dirname "$0")"
 DIR=$(pwd)
-BRANCH_DEFAULT="arena/01a0d6ff-fla"
+BRANCH_DEFAULT="arena/d90b37ee-fla"
 ENVF="$DIR/deploy/.env"
 VENV="$DIR/.venv"
 SVC=fla

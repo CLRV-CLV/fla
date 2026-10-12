@@ -8,6 +8,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from server.main import app
 from server.desktop_dist import ensure_desktop_exe
+from server.routers.ai import MsgIn, _DuckDuckGoParser
 
 client = TestClient(app)
 
@@ -45,13 +46,61 @@ def test_desktop_version_and_download():
     assert ver_resp.status_code == 200
     ver_data = ver_resp.json()
     assert ver_data["ok"] is True
-    assert ver_data["version"] == "1.36.0"
+    assert ver_data["version"] == "3.5.2"
 
     # Check download endpoint
     dl_resp = client.get("/api/desktop/download")
     assert dl_resp.status_code == 200
     assert dl_resp.content.startswith(b"MZ")
     assert len(dl_resp.content) > 300000
+
+def test_mobile_app_update_version_matches_gradle():
+    response = client.get("/api/app/info")
+    assert response.status_code == 200
+    android = response.json()["android"]
+    assert android["version"] == "1.3.1"
+    assert android["code"] == 5
+    assert android["available"] is True
+
+
+def test_experiment_extensions_are_local_and_platform_aware(tmp_path):
+    from desktop.qt.fla_qt import experiment_extensions as extensions
+
+    assert len(extensions.SIMULATIONS) >= 6
+    assert all(sim.url.startswith("https://phet.colorado.edu/sims/html/") for sim in extensions.SIMULATIONS)
+    assert extensions.platform_key("win32", "AMD64") == "windows-x86_64"
+    assert extensions.platform_key("darwin", "arm64") == "macos-arm64"
+    assert extensions.platform_key("linux", "aarch64") == "linux-aarch64"
+    assert extensions._TRACKER_FILES["windows"].git_blob_sha1 == "c3b9c2ef49daebb57eb2745f8ffb5f30123ccc34"
+    assert extensions.extension_dir("phet-forces", tmp_path) == tmp_path / "Extensions" / "phet-forces"
+    assert "windows-x86_64" not in extensions._AVOGADRO_PACKAGES
+
+
+def test_physics_simulation_installs_as_local_offline_extension(tmp_path, monkeypatch):
+    import io
+    from desktop.qt.fla_qt import experiment_extensions as extensions
+
+    sim = extensions.SIMULATIONS[0]
+    payload = (f"<!doctype html><html><head><title>PhET {sim.slug}</title></head><body>".encode()
+               + b"simulation" * 12000 + b"</body></html>")
+
+    class FakeResponse(io.BytesIO):
+        headers = {"Content-Length": str(len(payload))}
+
+        def geturl(self):
+            return sim.url
+
+    monkeypatch.setattr(extensions.urllib.request, "urlopen",
+                        lambda _request, timeout=60: FakeResponse(payload))
+    entry = extensions.install(sim.id, root=tmp_path)
+    assert entry.exists()
+    assert extensions.installed_entry(sim.id, root=tmp_path) == entry.resolve()
+    assert extensions.open_installed(sim.id, root=tmp_path) == entry.resolve()
+    manifest = extensions._manifest_path(extensions.extension_dir(sim.id, tmp_path))
+    assert "PhET" in manifest.read_text(encoding="utf-8")
+    extensions.uninstall(sim.id, root=tmp_path)
+    assert not extensions.extension_dir(sim.id, tmp_path).exists()
+
 
 def test_csharp_client_architecture():
     cs_path = REPO_ROOT / "desktop" / "FLA_Client.cs"
@@ -114,6 +163,23 @@ def test_file_rename_patch():
         # Cleanup
         del_resp = c.delete(f"/api/files/{fid}", headers=headers)
         assert del_resp.status_code == 200
+
+def test_opt_in_web_search_parser_and_request_flag():
+    parser = _DuckDuckGoParser()
+    parser.feed(
+        '<div class="result results_links"><div class="result__body">'
+        '<a class="result__a" href="https://example.org/physics"><span>Physics lesson</span></a>'
+        '<a class="result__snippet">Open-source <b>simulation</b></a>'
+        '</div></div>'
+    )
+    if parser.current:
+        parser._finish()
+    assert parser.items == [{
+        "title": "Physics lesson", "url": "https://example.org/physics", "snippet": "Open-source simulation"
+    }]
+    assert MsgIn(content="Explain this", online_search=True).online_search is True
+    assert MsgIn(content="Explain this").online_search is False
+
 
 def test_web_static_assets_serve():
     resp_index = client.get("/")

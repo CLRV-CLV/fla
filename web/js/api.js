@@ -42,23 +42,30 @@
         timer = setTimeout(() => ctrl.abort(), timeoutMs);
       }
       try {
-        r = await fetch(path, Object.assign({}, opts, { headers }));
+        try {
+          r = await fetch(path, Object.assign({}, opts, { headers }));
+        } catch (e) {
+          if (e && e.name === 'AbortError') throw new Error('请求超时，请检查网络');
+          throw new Error('网络错误，请检查连接');
+        }
+        if (r.status === 401 && path.indexOf('/api/auth/login') < 0 && path.indexOf('/api/auth/register') < 0 && path.indexOf('/api/auth/qr/') < 0) {
+          API.setToken('');
+          location.hash = '#/login';
+          throw new Error('登录已过期，请重新登录');
+        }
+        let data = null;
+        const ct = r.headers.get('content-type') || '';
+        // Keep the deadline active until the response body is fully consumed. Clearing it after
+        // fetch() resolves only covers headers; a stalled JSON body otherwise leaves pages loading forever.
+        if (ct.indexOf('json') >= 0) data = await r.json();
+        if (!r.ok) throw new Error(errText(data) || ('请求失败 (' + r.status + ')'));
+        return data;
       } catch (e) {
-        if (timer) clearTimeout(timer);
         if (e && e.name === 'AbortError') throw new Error('请求超时，请检查网络');
-        throw new Error('网络错误，请检查连接');
+        throw e;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
-      if (timer) clearTimeout(timer);
-      if (r.status === 401 && path.indexOf('/api/auth/login') < 0 && path.indexOf('/api/auth/register') < 0 && path.indexOf('/api/auth/qr/') < 0) {
-        API.setToken('');
-        location.hash = '#/login';
-        throw new Error('登录已过期，请重新登录');
-      }
-      let data = null;
-      const ct = r.headers.get('content-type') || '';
-      if (ct.indexOf('json') >= 0) data = await r.json();
-      if (!r.ok) throw new Error(errText(data) || ('请求失败 (' + r.status + ')'));
-      return data;
     },
 
     get(p) { return API.req(p); },

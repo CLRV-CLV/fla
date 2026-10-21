@@ -109,6 +109,11 @@ def test_file_list_query_is_indexed_and_frontend_recovers_from_errors():
     assert "页面渲染失败" in app_js
     assert "重新加载" in app_js
 
+    api_js = (REPO_ROOT / "web" / "js" / "api.js").read_text(encoding="utf-8")
+    request_body = api_js.split("async req(path, opts) {", 1)[1].split("get(p)", 1)[0]
+    assert request_body.index("data = await r.json()") < request_body.index("finally {")
+    assert "if (timer) clearTimeout(timer);" in request_body
+
 
 def test_experiment_extensions_are_local_and_platform_aware(tmp_path):
     from desktop.qt.fla_qt import experiment_extensions as extensions
@@ -257,6 +262,7 @@ def test_web_static_assets_serve():
     assert resp_index.status_code == 200
     assert "FLA" in resp_index.text
     assert "js/app.js?v=157" in resp_index.text
+    assert "js/api.js?v=135" in resp_index.text
 
     resp_css = client.get("/style.css")
     assert resp_css.status_code == 200

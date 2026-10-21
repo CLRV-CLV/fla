@@ -262,7 +262,7 @@ def test_web_static_assets_serve():
     assert resp_index.status_code == 200
     assert "FLA" in resp_index.text
     assert "js/app.js?v=157" in resp_index.text
-    assert "js/api.js?v=135" in resp_index.text
+    assert "js/api.js?v=136" in resp_index.text
 
     resp_css = client.get("/style.css")
     assert resp_css.status_code == 200

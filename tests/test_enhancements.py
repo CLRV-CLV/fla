@@ -106,6 +106,7 @@ def test_file_list_query_is_indexed_and_frontend_recovers_from_errors():
     app_js = (REPO_ROOT / "web" / "js" / "app.js").read_text(encoding="utf-8")
     assert "timeout: 30000" in app_js
     assert "showFileListLoadError(e)" in app_js
+    assert "页面渲染失败" in app_js
     assert "重新加载" in app_js
 
 

@@ -1126,8 +1126,14 @@ async function refreshList() {
     else UI.toast('文件列表暂时无法更新：' + (e.message || '网络错误'), 'err');
     return false;
   }
-  App.files = files;
-  applyFiltersAndSort();
+  try {
+    App.files = files;
+    applyFiltersAndSort();
+  } catch (e) {
+    // API 返回成功也可能遇到坏数据/渲染异常；不能让初始占位符永久留在页面。
+    showFileListLoadError(new Error('课件数据已收到，但页面渲染失败：' + (e.message || '未知错误')));
+    return false;
+  }
 
   if (pollT) { clearInterval(pollT); pollT = null; }
   if (files.some(f => f.status === 'converting')) {

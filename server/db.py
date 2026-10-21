@@ -112,6 +112,7 @@ CREATE TABLE IF NOT EXISTS files(
   share_token TEXT,
   created_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS ix_files_owner_order ON files(user_id, id DESC);
 CREATE TABLE IF NOT EXISTS annotations(
   file_id INTEGER PRIMARY KEY,
   user_id INTEGER NOT NULL,

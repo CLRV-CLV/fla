@@ -1127,18 +1127,21 @@ gen_conf
     ai_js = (root / "web" / "js" / "ai.js").read_text()
     ai_py = (root / "server" / "routers" / "ai.py").read_text()
     desktop_window = (root / "desktop" / "qt" / "fla_qt" / "window.py").read_text()
-    check("Web 与桌面 AI 皆支持用户主动开启联网搜索并提示第三方隐私边界",
+    check("AI 联网搜索改用开源 DDGS 多引擎库；客户端仍可主动开启并提示隐私边界",
           "online_search" in ai_js and "_web_search(search_query)" in ai_py and
-          "online_search" in desktop_window and "DuckDuckGo" in desktop_window, "")
+          "from ddgs import DDGS" in ai_py and 'backend="auto"' in ai_py and
+          "online_search" in desktop_window and "DDGS" in desktop_window and "第三方搜索引擎" in desktop_window, "")
     mobile_main = (root / "mobile" / "android" / "app" / "src" / "main" / "java" / "top" / "clrv" / "fla" / "MainActivity.java").read_text()
     mobile_home = (root / "mobile" / "android" / "app" / "src" / "main" / "assets" / "home.html").read_text()
     mobile_build = (root / "mobile" / "android" / "build_apk.sh").read_text()
     mobile_gradle = (root / "mobile" / "android" / "app" / "build.gradle").read_text()
     mobile_api = (root / "server" / "routers" / "mobile.py").read_text()
-    check("Android 安装包已升至 1.3.1/5，服务端版本匹配且客户端以 BuildConfig 比较",
+    check("Android 1.4.1/7 已有原生 Material 首页、独立投屏入口与匹配下载版本",
           "BuildConfig.VERSION_CODE" in mobile_main and "BuildConfig.java" in mobile_build and
-          'versionCode 5' in mobile_gradle and 'versionName "1.3.1"' in mobile_gradle and
-          'APK_VERSION = "1.3.1"' in mobile_api and 'APK_CODE = 5' in mobile_api and
+          'versionCode 7' in mobile_gradle and 'versionName "1.4.1"' in mobile_gradle and
+          'APK_VERSION = "1.4.1"' in mobile_api and 'APK_CODE = 7' in mobile_api and
+          "renderHome()" in mobile_main and "showCast()" in mobile_main and
+          "MaterialCardView" in mobile_main and "com.google.android.material:material" in mobile_gradle and
           "home-grid" in mobile_home and "castEntry" in mobile_home, "")
     cast_py = (root / "desktop" / "qt" / "fla_qt" / "cast.py").read_text()
     check("桌面手机画面浮窗支持置顶、拖动与缩放，控制条可结束投屏",

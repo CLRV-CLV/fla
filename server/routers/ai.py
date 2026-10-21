@@ -10,7 +10,6 @@ import secrets
 import urllib.error
 import urllib.parse
 import urllib.request
-from html.parser import HTMLParser
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import StreamingResponse
@@ -129,100 +128,45 @@ def _complete(m, messages, timeout=120) -> str:
         raise AIError("上游返回格式异常")
 
 
-class _DuckDuckGoParser(HTMLParser):
-    """只提取结果标题、链接与摘要；不渲染/执行搜索页返回的 HTML。"""
-    def __init__(self):
-        super().__init__(convert_charrefs=True)
-        self.items = []
-        self.current = None
-        self.result_depth = 0
-        self.capture = None
-        self.capture_depth = 0
-
-    def handle_starttag(self, tag, attrs):
-        attrs = dict(attrs)
-        classes = set((attrs.get("class") or "").split())
-        if tag == "div" and "result" in classes:
-            if self.current:
-                self._finish()
-            self.current = {"title": "", "url": "", "snippet": ""}
-            self.result_depth = 1
-        elif self.current and tag == "div" and self.result_depth:
-            self.result_depth += 1
-
-        if not self.current:
-            return
-        if self.capture:
-            self.capture_depth += 1
-        elif tag == "a" and "result__a" in classes:
-            self.capture = "title"
-            self.capture_depth = 1
-            self.current["url"] = attrs.get("href", "")
-        elif "result__snippet" in classes:
-            self.capture = "snippet"
-            self.capture_depth = 1
-
-    def handle_endtag(self, tag):
-        if self.capture:
-            self.capture_depth -= 1
-            if self.capture_depth <= 0:
-                self.capture = None
-                self.capture_depth = 0
-        if tag == "div" and self.current and self.result_depth:
-            self.result_depth -= 1
-            if self.result_depth <= 0:
-                self._finish()
-
-    def handle_data(self, data):
-        if self.current and self.capture:
-            self.current[self.capture] += data
-
-    def handle_startendtag(self, tag, attrs):
-        self.handle_starttag(tag, attrs)
-        self.handle_endtag(tag)
-
-    def _finish(self):
-        if self.current:
-            self.items.append(self.current)
-        self.current = None
-        self.result_depth = 0
-        self.capture = None
-        self.capture_depth = 0
-
-
 def _web_search(query: str, limit: int = 5):
-    """Opt-in, server-side web search via DuckDuckGo HTML. Query is bounded; errors are non-fatal."""
+    """Opt-in metasearch via the open-source DDGS library; network errors are non-fatal."""
     query = (query or "").strip()[:300]
     if not query:
         return [], "没有可搜索的内容"
-    url = "https://html.duckduckgo.com/html/?" + urllib.parse.urlencode({"q": query})
-    req = urllib.request.Request(url, headers={
-        "User-Agent": "Mozilla/5.0 (compatible; FLA/3.6; +https://github.com/CLRV-FYX/fla)",
-        "Accept": "text/html,application/xhtml+xml",
-        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.7",
-    })
     try:
-        with urllib.request.urlopen(req, timeout=8) as response:
-            content = response.read(1_500_000).decode("utf-8", "replace")
-        parser = _DuckDuckGoParser()
-        parser.feed(content)
+        # Import lazily so the API can still start in a partial/offline installation.
+        # ddgs is an MIT-licensed metasearch library; `auto` aggregates independent providers
+        # rather than depending on a hand-maintained DuckDuckGo HTML page parser.
+        from ddgs import DDGS
+
+        with DDGS(timeout=8) as search:
+            results = search.text(
+                query,
+                region="wt-wt",
+                safesearch="moderate",
+                max_results=max(1, min(int(limit), 8)),
+                backend="auto",
+            )
         found = []
         seen = set()
-        for item in parser.items:
-            title = re.sub(r"\s+", " ", item.get("title", "")).strip()
-            snippet = re.sub(r"\s+", " ", item.get("snippet", "")).strip()
-            link = (item.get("url") or "").strip()
+        for item in results or []:
+            title = re.sub(r"\s+", " ", str(item.get("title") or "")).strip()
+            snippet = re.sub(r"\s+", " ", str(item.get("body") or item.get("snippet") or "")).strip()
+            link = str(item.get("href") or item.get("url") or "").strip()
             parsed = urllib.parse.urlparse(link)
-            if parsed.hostname and parsed.hostname.lower().endswith("duckduckgo.com") and parsed.path.startswith("/l/"):
-                link = urllib.parse.parse_qs(parsed.query).get("uddg", [""])[0]
-            link = urllib.parse.urlunparse(urllib.parse.urlparse(link)._replace(fragment=""))
-            if not title or not snippet or urllib.parse.urlparse(link).scheme not in ("http", "https") or link in seen:
+            if (not title or not snippet or parsed.scheme not in ("http", "https")
+                    or not parsed.hostname or parsed.username or parsed.password):
+                continue
+            link = urllib.parse.urlunparse(parsed._replace(fragment=""))
+            if link in seen:
                 continue
             seen.add(link)
             found.append({"title": title[:180], "url": link[:800], "snippet": snippet[:700]})
             if len(found) >= max(1, min(int(limit), 8)):
                 break
         return found, None if found else "搜索引擎未返回可用结果"
+    except ImportError:
+        return [], "联网搜索组件 ddgs 未安装，请更新服务端依赖"
     except Exception as e:
         return [], f"联网搜索暂不可用: {str(e)[:180]}"
 

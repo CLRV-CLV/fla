@@ -7,5 +7,6 @@ pypdf>=4.0
 python-pptx>=1.0
 matplotlib>=3.8
 qrcode>=7.4.2
+ddgs>=9.16,<10  # MIT 开源多引擎联网搜索, 避免自写抓取 DuckDuckGo HTML
 cryptography>=41  # 可选: iOS 描述文件签名
 av>=12  # iPhone 整屏投屏: RTMP 画面解码 (缺失时自动改用 ffmpeg)

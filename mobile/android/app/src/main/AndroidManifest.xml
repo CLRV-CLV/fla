@@ -14,7 +14,7 @@
         android:label="FLA 手机端"
         android:icon="@mipmap/ic_launcher"
         android:usesCleartextTraffic="true"
-        android:theme="@android:style/Theme.Material.NoActionBar">
+        android:theme="@style/Theme.FLA">
         <activity android:name=".MainActivity" android:exported="true" android:launchMode="singleTask"
             android:screenOrientation="unspecified"
             android:configChanges="orientation|screenSize|screenLayout|keyboardHidden|smallestScreenSize">

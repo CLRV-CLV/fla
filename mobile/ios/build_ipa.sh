@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # 在 Linux 上交叉编译 iOS 版 FLA 手机端 (无需 Mac / Xcode)
-#   编译器: PyPI ziglang (clang, 目标 aarch64-ios)
+#   编译器: PyPI ziglang==0.13.0 (clang, 目标 aarch64-ios; 0.17.x 目前会破坏该 SDK 的链接)
 #   SDK   : github.com/theos/sdks 的 iPhoneOS16.5.sdk (稀疏克隆)
 # 产物: desktop/bin/FLA-ios.ipa  —— 未签名, 需要用户用 爱思助手/全能签/Sideloadly(Apple ID) 或 TrollStore 签名安装
 set -euo pipefail
@@ -10,7 +10,11 @@ SDKDIR="${SDKDIR:-/tmp/tsdk}"
 S="$SDKDIR/iPhoneOS16.5.sdk"
 VER=$(grep -o 'kVersion = @"[^"]*"' "$HERE/App.m" | cut -d'"' -f2)
 APPID="top.clrv.fla.app"
-python3 -c "import ziglang" 2>/dev/null || pip install -q --break-system-packages ziglang
+ZIG_VERSION="${ZIG_VERSION:-0.13.0}"
+if [ "$(python3 -m ziglang version 2>/dev/null || true)" != "$ZIG_VERSION" ]; then
+  python3 -m pip install -q --break-system-packages --upgrade "ziglang==$ZIG_VERSION"
+fi
+python3 -c "import PIL" 2>/dev/null || python3 -m pip install -q --break-system-packages Pillow
 if [ ! -d "$S/System/Library/Frameworks/ReplayKit.framework" ]; then
   rm -rf "$SDKDIR"
   git clone -q --filter=blob:none --no-checkout --depth 1 https://github.com/theos/sdks.git "$SDKDIR"
@@ -19,16 +23,14 @@ fi
 CC="python3 -m ziglang cc -target aarch64-ios.14.0 -O2 -fno-sanitize=all -isysroot $S -isystem $S/usr/include -iframework $S/System/Library/Frameworks -F$S/System/Library/Frameworks -L$S/usr/lib -fobjc-arc -Wno-property-attribute-mismatch"
 W="$(mktemp -d)"; trap 'rm -rf "$W"' EXIT
 A="$W/Payload/FLA.app"; X="$A/PlugIns/FLABroadcast.appex"
-mkdir -p "$A/www" "$X"
+mkdir -p "$X"
 echo ">> FLA iOS $VER"
 
 $CC -framework UIKit -framework WebKit -framework AVFoundation -framework ReplayKit -framework CoreGraphics -framework QuartzCore -framework Foundation \
-    -o "$A/FLA" "$HERE/App.m"
+    -o "$A/FLA" "$HERE/App.m" -lSystem -lobjc
 $CC -fapplication-extension -Wl,-e,_NSExtensionMain -framework ReplayKit -framework CoreImage -framework CoreMedia \
-    -framework CoreVideo -framework CoreGraphics -framework QuartzCore -framework ImageIO -framework UIKit -framework Foundation -o "$X/FLABroadcast" "$HERE/Broadcast.m"
+    -framework CoreVideo -framework CoreGraphics -framework QuartzCore -framework ImageIO -framework UIKit -framework Foundation -o "$X/FLABroadcast" "$HERE/Broadcast.m" -lSystem -lobjc
 
-cp "$ROOT/mobile/android/app/src/main/assets/home.html" "$A/www/home.html"
-cp "$ROOT/web/js/jsqr.min.js" "$A/www/jsqr.min.js"
 python3 - "$ROOT/desktop/assets/fla.ico" "$A" <<'PY'
 import sys
 from PIL import Image
@@ -51,7 +53,7 @@ plistlib.dump({**common,
     "CFBundlePackageType": "APPL",
     "CFBundleIcons": {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60"], "CFBundleIconName": "AppIcon"}},
     "CFBundleIcons~ipad": {"CFBundlePrimaryIcon": {"CFBundleIconFiles": ["AppIcon60x60", "AppIcon76x76", "AppIcon83.5x83.5"]}},
-    "UILaunchScreen": {"UIColorName": "", "UIImageRespectsSafeAreaInsets": False},
+    "UILaunchScreen": {},
     "UIStatusBarStyle": "UIStatusBarStyleLightContent", "UIViewControllerBasedStatusBarAppearance": True,
     "UISupportedInterfaceOrientations": ["UIInterfaceOrientationPortrait", "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"],
     "UISupportedInterfaceOrientations~ipad": ["UIInterfaceOrientationPortrait", "UIInterfaceOrientationPortraitUpsideDown", "UIInterfaceOrientationLandscapeLeft", "UIInterfaceOrientationLandscapeRight"],
@@ -66,19 +68,12 @@ plistlib.dump({**common,
     "CFBundleDisplayName": "FLA 投屏", "CFBundlePackageType": "XPC!",
     "NSExtension": {"NSExtensionPointIdentifier": "com.apple.broadcast-services-upload",
                     "NSExtensionPrincipalClass": "SampleHandler",
-                    "RPBroadcastProcessMode": "RPBroadcastProcessModeSampleBuffer"},
+                    "NSExtensionAttributes": {"RPBroadcastProcessMode": "RPBroadcastProcessModeSampleBuffer"}},
 }, open(ext, "wb"))
 PY
 printf 'APPL????' > "$A/PkgInfo"
-# 权限声明 (签名工具会读取; App Group 用于 App 与扩展共享配对信息, 不支持时扩展会改用服务器登记)
-cat > "$HERE/entitlements.plist" <<EOF
-<?xml version="1.0" encoding="UTF-8"?>
-<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-<plist version="1.0"><dict>
-<key>application-identifier</key><string>$APPID</string>
-<key>com.apple.security.application-groups</key><array><string>group.top.clrv.fla</string></array>
-</dict></plist>
-EOF
+# 个人 Apple ID/免费描述文件通常没有 App Group 能力。本 App 不声明硬编码 Team ID 或 App Group entitlement；
+# ReplayKit 扩展通过 /api/remote/ios/session?vid=... 从服务器取回配对状态。签名时请让签名器按 profile 自动注入权限。
 mkdir -p "$ROOT/desktop/bin"
 rm -f "$ROOT/desktop/bin/FLA-ios.ipa"
 (cd "$W" && python3 -c "
@@ -91,3 +86,4 @@ for d,_,fs in os.walk('Payload'):
         z.writestr(zi,open(p,'rb').read())
 z.close()")
 ls -la "$ROOT/desktop/bin/FLA-ios.ipa"
+python3 "$HERE/validate_ipa.py" "$ROOT/desktop/bin/FLA-ios.ipa"

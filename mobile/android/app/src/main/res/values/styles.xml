@@ -1,0 +1,14 @@
+<resources>
+    <style name="Theme.FLA" parent="Theme.Material3.DayNight.NoActionBar">
+        <item name="colorPrimary">#C7D8F3</item>
+        <item name="colorOnPrimary">#0C0D10</item>
+        <item name="colorSecondary">#8DB4EE</item>
+        <item name="colorSurface">#171A20</item>
+        <item name="android:colorAccent">#C7D8F3</item>
+        <item name="android:fontFamily">sans</item>
+        <item name="android:statusBarColor">#0C0D10</item>
+        <item name="android:navigationBarColor">#111318</item>
+        <item name="android:windowLightStatusBar">false</item>
+        <item name="android:windowActionModeOverlay">true</item>
+    </style>
+</resources>

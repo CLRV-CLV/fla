@@ -1,10 +1,19 @@
 #!/usr/bin/env bash
-# 无 Gradle / 无 Android SDK 的 APK 构建 (沙箱只能连 PyPI / npm / github.com 时使用)
-# 工具链: 先运行 mobile/android/prep_tools.sh (只需 PyPI + npm)
+# APK 构建：优先使用标准 Gradle (含 Material Components + ZXing)；无 SDK/Maven 网络时退回独立原生控件构建。
+# fallback 工具链: 先运行 mobile/android/prep_tools.sh (只需 PyPI + npm)
 # 用法: bash mobile/android/build_apk.sh   产物: desktop/bin/FLA-cast.apk
+# FLA_ANDROID_MANUAL=1 可强制使用无需 Gradle 的 fallback 构建。
 set -euo pipefail
 HERE="$(cd "$(dirname "$0")" && pwd)"
 ROOT="$(cd "$HERE/../.." && pwd)"
+ANDROID_SDK="${ANDROID_HOME:-${ANDROID_SDK_ROOT:-}}"
+if [ "${FLA_ANDROID_MANUAL:-0}" != "1" ] && [ -n "$ANDROID_SDK" ] && command -v gradle >/dev/null 2>&1; then
+  echo ">> Gradle release build (Material Components + ZXing)"
+  (cd "$HERE" && gradle --no-daemon :app:assembleRelease)
+  cp "$HERE/app/build/outputs/apk/release/app-release.apk" "$ROOT/desktop/bin/FLA-cast.apk"
+  ls -la "$ROOT/desktop/bin/FLA-cast.apk"
+  exit 0
+fi
 T="${T:-/tmp/apktools}"
 [ -f "$T/d8.jar" ] || bash "$HERE/prep_tools.sh"
 JAVA="$T/jre/bin/java"
@@ -19,9 +28,14 @@ VC=$(grep -o 'versionCode [0-9]*' "$HERE/app/build.gradle" | awk '{print $2}')
 VN=$(grep -o 'versionName "[^"]*"' "$HERE/app/build.gradle" | cut -d'"' -f2)
 echo ">> FLA 投屏 $VN ($VC)"
 
-# 1. 资源 + 清单 (Gradle 用 namespace, aapt2 直连需要 package 属性)
-sed 's#<manifest xmlns:android="http://schemas.android.com/apk/res/android">#<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="top.clrv.fla">#' "$APP/AndroidManifest.xml" > "$W/AndroidManifest.xml"
-"$T/aapt2" compile --dir "$APP/res" -o "$W/res.zip"
+# 1. 资源 + 清单 (Gradle 使用 Material 3/ZXing; 独立构建不拉 Maven 依赖, 使用原生卡片/扫码页降级)
+mkdir -p "$W/res"
+cp -R "$APP/res/." "$W/res/"
+rm -f "$W/res/values/styles.xml"   # Material3 parent 由 Gradle 依赖提供, 本地 aapt2 fallback 用系统主题
+sed -e 's#<manifest xmlns:android="http://schemas.android.com/apk/res/android">#<manifest xmlns:android="http://schemas.android.com/apk/res/android" package="top.clrv.fla">#' \
+    -e 's#android:theme="@style/Theme.FLA"#android:theme="@android:style/Theme.Material.NoActionBar"#' \
+    "$APP/AndroidManifest.xml" > "$W/AndroidManifest.xml"
+"$T/aapt2" compile --dir "$W/res" -o "$W/res.zip"
 cp "$ROOT/web/js/jsqr.min.js" "$APP/assets/jsqr.min.js"
 "$T/aapt2" link -I "$A34" -A "$APP/assets" --manifest "$W/AndroidManifest.xml" "$W/res.zip" \
   --min-sdk-version 24 --target-sdk-version 34 --version-code "$VC" --version-name "$VN" \

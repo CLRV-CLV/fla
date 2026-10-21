@@ -567,7 +567,7 @@ class AIPage(QWidget):
         self.model.currentIndexChanged.connect(self._sync_controls)
         controls_row.addWidget(self.model, 1)
         self.search_check = CheckBox("联网搜索", controls)
-        self.search_check.setToolTip("仅本轮问题会发送给 DuckDuckGo 搜索网页；请勿搜索个人或敏感信息。")
+        self.search_check.setToolTip("仅本轮问题会发送给 DDGS 聚合的第三方搜索引擎；请勿搜索个人或敏感信息。")
         controls_row.addWidget(self.search_check)
         self.model_refresh = TransparentToolButton(FIF.SYNC, controls)
         self.model_refresh.setToolTip("刷新可用模型")
@@ -575,7 +575,7 @@ class AIPage(QWidget):
         controls_row.addWidget(self.model_refresh)
         main.addWidget(controls)
         self.search_notice = CaptionLabel(
-            "默认关闭联网搜索；开启后，本轮问题会发送给 DuckDuckGo。请勿输入个人或敏感信息。"
+            "默认关闭联网搜索；开启后，本轮问题会发送给 DDGS 聚合的第三方搜索引擎。请勿输入个人或敏感信息。"
         )
         self.search_notice.setWordWrap(True)
         self.search_notice.setTextColor("#666666", "#aaaaaa")

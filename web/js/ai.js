@@ -110,10 +110,10 @@ async function view() {
       '</aside>' +
       '<section class="ai-main">' +
         '<div class="ai-top"><span class="ai-title">AI 助手</span>' +
-          '<label class="ai-search-toggle" title="联网搜索会把本轮问题发送给 DuckDuckGo。请勿搜索个人或敏感信息。">' +
+          '<label class="ai-search-toggle" title="联网搜索会把本轮问题发送给 DDGS 聚合的第三方搜索引擎。请勿搜索个人或敏感信息。">' +
             '<input id="ai-web-search" type="checkbox"> 联网搜索</label>' +
           '<select id="ai-model" class="inp ai-model-sel"></select></div>' +
-        '<div class="ai-search-hint">仅在勾选“联网搜索”后才会联网；开启时，本轮问题会发送给 DuckDuckGo。请勿输入个人或敏感信息。</div>' +
+        '<div class="ai-search-hint">仅在勾选“联网搜索”后才会联网；开启时，本轮问题会发送给 DDGS 聚合的第三方搜索引擎。请勿输入个人或敏感信息。</div>' +
         '<div class="ai-msgs" id="ai-msgs"></div>' +
         '<div class="ai-input">' +
           '<textarea id="ai-inp" rows="2" maxlength="8000" placeholder="输入问题或需求，Enter 发送，Shift+Enter 换行"></textarea>' +

@@ -6,7 +6,7 @@
 #import <CoreImage/CoreImage.h>
 #import <UIKit/UIKit.h>
 
-static NSString *const kGroup = @"group.top.clrv.fla";
+static NSString *const kGroup = @"group.top.clrv.fla";  // optional; a free profile may not authorize this suite
 
 @interface SampleHandler : RPBroadcastSampleHandler <NSURLSessionWebSocketDelegate>
 @property (nonatomic, strong) NSURLSession *urlSession;
@@ -37,7 +37,7 @@ static NSString *const kGroup = @"group.top.clrv.fla";
     self.urlSession = [NSURLSession sessionWithConfiguration:NSURLSessionConfiguration.defaultSessionConfiguration delegate:self delegateQueue:nil];
     [self state:@"正在连接电脑…"];
     if (self.sid.length && self.code.length && self.server.length) [self connect];
-    else [self lookup:0];       // App Group 不可用 (自签工具未保留) → 按设备 ID 向服务器取会话
+    else [self lookup:0];     // Personal/free profiles may lack App Group; retrieve the session by vendor ID.
 }
 
 - (void)lookup:(int)i {
@@ -96,8 +96,8 @@ static NSString *const kGroup = @"group.top.clrv.fla";
 }
 - (void)dropped {
     self.open = NO;
-    self.fails++;
     [self state:@"连接断开，正在重连…"];
+    self.fails++;
     double delay = MIN(5.0, 0.8 * self.fails);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{ [self connect]; });
 }
@@ -150,8 +150,8 @@ static NSString *const kGroup = @"group.top.clrv.fla";
     });
 }
 
-- (void)broadcastPaused { [self state:@"已暂停"]; }
-- (void)broadcastResumed { [self state:@"正在整屏投屏"]; }
+- (void)broadcastPaused { self.open = NO; [self state:@"已暂停"]; }
+- (void)broadcastResumed { self.open = YES; [self state:@"正在整屏投屏"]; }
 - (void)broadcastFinished {
     self.open = NO;
     if (self.ws) {

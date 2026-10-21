@@ -8,7 +8,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 from server.main import app
 from server.desktop_dist import ensure_desktop_exe
-from server.routers.ai import MsgIn, _DuckDuckGoParser
+from server.routers.ai import MsgIn, _web_search
 
 client = TestClient(app)
 
@@ -58,9 +58,55 @@ def test_mobile_app_update_version_matches_gradle():
     response = client.get("/api/app/info")
     assert response.status_code == 200
     android = response.json()["android"]
-    assert android["version"] == "1.3.1"
-    assert android["code"] == 5
+    assert android["version"] == "1.4.1"
+    assert android["code"] == 7
+    assert android["size"] > 10_000
     assert android["available"] is True
+    ios = response.json()["ios"]
+    assert ios["ipa_version"] == "1.1.1"
+    assert ios["ipa_size"] > 10_000
+
+
+def test_ios_ipa_bundle_is_arm64_device_ready_and_signing_safe():
+    from mobile.ios.validate_ipa import validate
+
+    info = validate(REPO_ROOT / "desktop" / "bin" / "FLA-ios.ipa")
+    assert info["version"] == "1.1.1"
+    assert info["extension_bundle_id"] == "top.clrv.fla.app.broadcast"
+    assert "unsigned" in info["signature"]
+    script = (REPO_ROOT / "mobile" / "ios" / "build_ipa.sh").read_text(encoding="utf-8")
+    assert '"NSExtensionAttributes": {"RPBroadcastProcessMode"' in script
+    assert "application-identifier" not in script
+    assert "com.apple.security.application-groups" not in script
+    assert not (REPO_ROOT / "mobile" / "ios" / "entitlements.plist").exists()
+
+
+def test_native_qr_pairing_preserves_non_default_server_ports():
+    android = (REPO_ROOT / "mobile" / "android" / "app" / "src" / "main" / "java" /
+               "top" / "clrv" / "fla" / "MainActivity.java").read_text(encoding="utf-8")
+    ios = (REPO_ROOT / "mobile" / "ios" / "App.m").read_text(encoding="utf-8")
+    assert "u.getPort() > 0 ? \":\" + u.getPort() : \"\"" in android
+    assert "parts.port ? [NSString stringWithFormat:@\"%@:%@\"" in ios
+
+
+def test_file_list_query_is_indexed_and_frontend_recovers_from_errors():
+    import sqlite3
+    from server.db import SCHEMA
+
+    con = sqlite3.connect(":memory:")
+    try:
+        con.executescript(SCHEMA)
+        plan = con.execute(
+            "EXPLAIN QUERY PLAN SELECT * FROM files WHERE user_id=? ORDER BY id DESC", (1,)
+        ).fetchall()
+        assert any("ix_files_owner_order" in row[3] for row in plan)
+    finally:
+        con.close()
+
+    app_js = (REPO_ROOT / "web" / "js" / "app.js").read_text(encoding="utf-8")
+    assert "timeout: 30000" in app_js
+    assert "showFileListLoadError(e)" in app_js
+    assert "重新加载" in app_js
 
 
 def test_experiment_extensions_are_local_and_platform_aware(tmp_path):
@@ -164,19 +210,43 @@ def test_file_rename_patch():
         del_resp = c.delete(f"/api/files/{fid}", headers=headers)
         assert del_resp.status_code == 200
 
-def test_opt_in_web_search_parser_and_request_flag():
-    parser = _DuckDuckGoParser()
-    parser.feed(
-        '<div class="result results_links"><div class="result__body">'
-        '<a class="result__a" href="https://example.org/physics"><span>Physics lesson</span></a>'
-        '<a class="result__snippet">Open-source <b>simulation</b></a>'
-        '</div></div>'
-    )
-    if parser.current:
-        parser._finish()
-    assert parser.items == [{
+def test_opt_in_web_search_uses_open_source_ddgs(monkeypatch):
+    import sys
+    import types
+
+    calls = {}
+
+    class FakeDDGS:
+        def __init__(self, timeout):
+            calls["timeout"] = timeout
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return None
+
+        def text(self, query, **kwargs):
+            calls["query"] = query
+            calls["kwargs"] = kwargs
+            return [
+                {"title": "Physics lesson", "href": "https://example.org/physics#top",
+                 "body": "Open-source simulation"},
+                {"title": "Unsafe", "href": "javascript:alert(1)", "body": "not a web result"},
+            ]
+
+    monkeypatch.setitem(sys.modules, "ddgs", types.SimpleNamespace(DDGS=FakeDDGS))
+    results, error = _web_search("  Explain this  ", limit=5)
+    assert error is None
+    assert results == [{
         "title": "Physics lesson", "url": "https://example.org/physics", "snippet": "Open-source simulation"
     }]
+    assert calls["query"] == "Explain this"
+    assert calls["kwargs"] == {
+        "region": "wt-wt", "safesearch": "moderate", "max_results": 5, "backend": "auto"
+    }
+    assert calls["timeout"] == 8
+    assert _web_search("  ")[0] == []
     assert MsgIn(content="Explain this", online_search=True).online_search is True
     assert MsgIn(content="Explain this").online_search is False
 
@@ -185,6 +255,7 @@ def test_web_static_assets_serve():
     resp_index = client.get("/")
     assert resp_index.status_code == 200
     assert "FLA" in resp_index.text
+    assert "js/app.js?v=157" in resp_index.text
 
     resp_css = client.get("/style.css")
     assert resp_css.status_code == 200

@@ -1095,23 +1095,59 @@ function copyText(t) {
   });
 }
 
+function showFileListLoadError(error) {
+  const container = $('#files-container');
+  if (!container) return;
+  const message = error && error.message ? error.message : '请稍后重试';
+  container.innerHTML = '<div class="empty file-list-error"><p>课件列表加载失败</p>' +
+    '<p class="muted">' + UI.esc(message) + '</p>' +
+    '<button class="btn sm primary" id="file-list-retry">重新加载</button></div>';
+  const retry = $('#file-list-retry', container);
+  if (retry) retry.onclick = () => {
+    container.innerHTML = '<div class="files-grid"><div class="empty">加载中…</div></div>';
+    refreshList();
+  };
+}
+
+async function requestFileList() {
+  // 文件数量会随长期使用增长；避免普通 API 的 8 秒默认超时让列表永远停在“加载中”。
+  const files = await API.req('/api/files', { timeout: 30000 });
+  if (!Array.isArray(files)) throw new Error('服务器返回的文件列表格式异常，请刷新后重试');
+  return files;
+}
+
 async function refreshList() {
-  let files = [];
-  try { files = await API.get('/api/files'); } catch (e) { return; }
+  let files;
+  try {
+    files = await requestFileList();
+  } catch (e) {
+    // 首次加载失败必须显示错误与重试入口；已有数据时保留列表，避免短暂断线清空页面。
+    if (!App.files.length) showFileListLoadError(e);
+    else UI.toast('文件列表暂时无法更新：' + (e.message || '网络错误'), 'err');
+    return false;
+  }
   App.files = files;
   applyFiltersAndSort();
 
   if (pollT) { clearInterval(pollT); pollT = null; }
   if (files.some(f => f.status === 'converting')) {
+    let pollBusy = false;
     pollT = setInterval(async () => {
       if (!$('#grid') && !$('.files-table')) { clearInterval(pollT); pollT = null; return; }
+      if (pollBusy) return;
+      pollBusy = true;
       try {
-        App.files = await API.get('/api/files');
+        App.files = await requestFileList();
         applyFiltersAndSort();
-      } catch(e){}
+      } catch (e) {
+        // 转换状态轮询可稍后重试，不要让瞬时网络波动打断正在显示的列表。
+      } finally {
+        pollBusy = false;
+      }
     }, 2500);
     App.setCleanup(() => { if (pollT) { clearInterval(pollT); pollT = null; } });
   }
+  return true;
 }
 
 async function uploadFiles(files) {

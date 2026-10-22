@@ -1,14 +1,16 @@
 #!/usr/bin/env bash
 # FLA 宝塔面板 / 非 Docker 部署脚本
 #   首次安装:  bash bt.sh install          (装系统依赖 + Python 虚拟环境 + 开机自启服务)
-#   更新代码:  bash bt.sh pull [分支]       (默认 arena/d90b37ee-fla, 更新后自动重启)
+#   更新代码:  bash bt.sh pull [分支]       (默认 arena/63f6f4b2-fla, 更新后自动重启; 也可 FLA_BRANCH=xxx bash bt.sh pull)
 #   宝塔Python项目模式: bash bt.sh deps (只装系统依赖) ; bash bt.sh pull (只更新代码, 然后在宝塔点重启)
 #   其它:      bash bt.sh start|stop|restart|status|logs|passwd 新密码
 # 进程由 systemd 守护 (fla.service, 崩溃自动重启/开机自启); 宝塔负责 Nginx 反代、SSL、防火墙。
 set -u
 cd "$(dirname "$0")"
 DIR=$(pwd)
-BRANCH_DEFAULT="arena/d90b37ee-fla"
+# 默认拉取分支: 修复/新功能分支. 合并进 main 后可改成 main 或 BRANCH_DEFAULT="main"
+# 优先级: 命令行参数 > 环境变量 FLA_BRANCH > 下面这个默认值
+BRANCH_DEFAULT="${FLA_BRANCH:-arena/63f6f4b2-fla}"
 ENVF="$DIR/deploy/.env"
 VENV="$DIR/.venv"
 SVC=fla
@@ -108,7 +110,7 @@ health() {
   echo "✘ 30 秒内未就绪, 查看日志: bash bt.sh logs"; return 1
 }
 
-REPO_PATH="CLRV-FYX/fla"
+REPO_PATH="CLRV-CLV/fla"   # 旧名 CLRV-FYX/fla 会 301 重定向到这里, 两者都能用
 # 代码源: 直连 GitHub 慢/断时自动换加速镜像 (按顺序尝试)
 SOURCES="https://github.com https://gh-proxy.com/https://github.com https://ghfast.top/https://github.com https://gh.llkk.cc/https://github.com"
 
@@ -154,6 +156,16 @@ download_code() {
   echo "  ✔ 代码已更新 ($(grep -oP 'CURRENT_VERSION = "\K[^"]+' server/routers/desktop.py))"
 }
 
+after_pull() {
+  if [ -f /etc/systemd/system/$SVC.service ]; then
+    [ -x "$VENV/bin/python" ] && pip_install >/dev/null 2>&1
+    write_service; systemctl restart $SVC; health
+  else
+    echo "✔ 代码已更新。请到 宝塔 → 网站 → Python项目 → FLA 点「重启」(依赖有变化时先点「模块」安装 requirements.txt)"
+  fi
+  echo "  提示: 前端有新版本时, 浏览器按一次 Ctrl+F5 可立刻去掉旧缓存"
+}
+
 case "${1:-status}" in
   install)
     echo ">> 1/4 安装系统依赖 (LibreOffice / ffmpeg / 中文字体)"
@@ -183,12 +195,16 @@ case "${1:-status}" in
     ;;
   pull|update)
     download_code "${2:-}" || exit 1
-    if [ -f /etc/systemd/system/$SVC.service ]; then
-      [ -x "$VENV/bin/python" ] && pip_install >/dev/null 2>&1
-      write_service; systemctl restart $SVC; health
-    else
-      echo "✔ 代码已更新。请到 宝塔 → 网站 → Python项目 → FLA 点「重启」(依赖有变化时先点「模块」安装 requirements.txt)"
+    # 更新后 bt.sh 自身也可能被换掉: 若新文件支持 _after_pull, 就交给新文件收尾
+    # (bash 会按旧文件偏移继续读脚本, 文件被替换后容易执行到错乱的指令)。
+    # 老版本 bt.sh 没有 _after_pull → 自动走下面原地收尾, 保证首次升级也安全。
+    if [ "${FLA_REEXEC:-0}" != "1" ] && grep -q '^  _after_pull)' "$0" 2>/dev/null; then
+      FLA_REEXEC=1 exec bash "$0" _after_pull
     fi
+    after_pull
+    ;;
+  _after_pull)
+    after_pull
     ;;
   start|stop|restart) systemctl "$1" $SVC; [ "$1" = stop ] || health ;;
   status) systemctl status $SVC --no-pager -l | head -15; curl -s "http://127.0.0.1:$PORT/api/version"; echo ;;

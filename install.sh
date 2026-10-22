@@ -1,16 +1,27 @@
 #!/bin/bash
 # ================================================================
-#  FLA (FYX Lesson All) 一键部署脚本 v1.26
+#  FLA (FYX Lesson All) 一键部署脚本 v1.27
 #  用法:  sudo bash install.sh [选项]
-#    --port N          指定端口 (默认 8306, 被占自动顺延; 微软放映需 80/443 域名)
+#    --port N          FLA 应用端口 (默认 8306, 被占自动顺延)
+#    --domain 域名...  对外域名(可多个, 空格分隔); 边缘 nginx 会为其签发 SSL 证书
+#                      不填 = 沿用上次的, 再没有就用 t.clrv.top t.fyx.best
 #    --password X      管理员 admin 初始密码 (默认交互输入或随机)
 #    --lite            精简模式 (不用 OnlyOffice, 无动画放映, 省内存)
 #    --foreground      不转入 screen, 就在前台执行(调试用)
+#    --no-edge         不装宿主机边缘 nginx (FLA 只能 IP:端口 访问)
+#    --no-ssl          只接管 80/443, 不签发证书 (纯 http)
+#    --https [域名...] 旧写法, 等价于 --domain (v1.27 起 SSL 默认就会做)
+#
+#  v1.27 网络架构:
+#    宿主机 nginx 独占 80 + 443, 用 server_name _ 的 default_server 接管【所有】
+#    指向本机的域名/IP, 统一反代到 127.0.0.1:8306 (FLA 应用端口);
+#    SSL 证书用【文件验证 HTTP-01 / webroot】自动签发 + 自动续期, 全程不停机,
+#    不需要停掉 nginx 去抢 80。微软 Office 在线放映要求的"域名+80/443 公开直链"
+#    因此自动满足。相关脚本: edge.sh(网关) / https.sh(证书)
+#
 #  OnlyOffice 来源:
-#    (自动)            检测到本机正在运行的 OnlyOffice 容器则自动复用(保留你的配置),
-#                      没有则使用/拉取官方镜像自带一套
-#    --https [域名...] 启用 HTTPS: Let's Encrypt 多域名证书 + 443 反代 (页码视觉同步的前置条件)
-#                      不填域名 = 默认 t.clrv.top t.fyx.best; 事后也可单独运行: sudo bash https.sh
+#    (自动)            默认不部署(Office 走微软在线渲染); 需要时 --ds-external 复用
+#                      本机已有的 OnlyOffice 容器, 或 --ds-new 自带一套
 #    --ds-new          强制使用自带的 OnlyOffice (不复用已有容器)
 #    --ds-external     强制复用已有的 OnlyOffice 容器(含已停止的)
 #    --ds-port N       已有 OnlyOffice 对外的端口 (探测失败时手动指定)
@@ -23,6 +34,8 @@
 #   · 三级自愈: nginx 不通 → 自动重启 nginx → 仍不通切换【直连模式】(app 直接
 #     发布端口, 绕过 nginx) → 仍不通重启 docker 修复防火墙规则; 并自动把
 #     nginx 日志写入 install.log 供排查
+#   · 边缘网关(第8步): 宿主机 nginx 占 80/443 接管所有域名 → 反代 127.0.0.1:$PORT
+#   · SSL(第9步): Let's Encrypt 文件验证签发 + 每天两次自动续期(不停机)
 #   · 防火墙安全顺序: 统一放行端口→一次 reload→(若 reload 过)先重启 docker 恢复
 #     iptables 转发规则, 再创建容器 (firewalld reload 会清空 docker 规则!)
 #   · 开机自启: 容器 restart=unless-stopped + docker 服务 enabled
@@ -38,7 +51,7 @@ BRAND="FLA (FYX Lesson All)"
 
 # ---------- 参数 ----------
 PORT=""; ADMIN_PW=""; MODE="auto"; DS_MODE="auto"; DS_PORT=""; DS_SECRET=""
-HTTPS_MODE=0; HTTPS_DOMS=""; FLA_DEFAULT_DOMS="t.clrv.top t.fyx.best"
+SSL_MODE=1; EDGE_MODE=1; HTTPS_DOMS=""; FLA_DEFAULT_DOMS="t.clrv.top t.fyx.best"
 INNER=0; FOREGROUND=0
 ORIG_ARGS=("$@")   # 原始参数: screen/tmux/nohup 转发用(解析循环会 shift 掉 $@)
 while [ $# -gt 0 ]; do
@@ -47,18 +60,23 @@ while [ $# -gt 0 ]; do
     --password) ADMIN_PW="$2"; shift 2 ;;
     --lite) MODE="lite"; shift ;;
     --full) MODE="full"; shift ;;
+    --domain|--domains) shift
+              while [ $# -gt 0 ] && [ "${1:0:1}" != "-" ]; do HTTPS_DOMS="$HTTPS_DOMS $1"; shift; done ;;
     --ds-new) DS_MODE="new"; shift ;;
     --ds-external) DS_MODE="external"; shift ;;
     --ds-port) DS_PORT="$2"; shift 2 ;;
     --ds-secret) DS_SECRET="$2"; shift 2 ;;
-    --https) HTTPS_MODE=1; shift
+    --https) shift
               while [ $# -gt 0 ] && [ "${1:0:1}" != "-" ]; do HTTPS_DOMS="$HTTPS_DOMS $1"; shift; done ;;
+    --no-ssl|--no-https) SSL_MODE=0; shift ;;
+    --no-edge) EDGE_MODE=0; SSL_MODE=0; shift ;;
     --foreground) FOREGROUND=1; shift ;;
     --inner) INNER=1; shift ;;
     -h|--help) grep '^#' "$0" | sed 's/^# \{0,2\}//'; exit 0 ;;
     *) echo "未知参数: $1 (用法见 --help)"; exit 1 ;;
   esac
 done
+HTTPS_DOMS=$(echo "$HTTPS_DOMS" | tr ',' ' '); HTTPS_DOMS=$(echo $HTTPS_DOMS)
 
 log(){ echo "[$(date '+%H:%M:%S')] $*" | tee -a "$LOG"; }
 die(){ echo; log "✘ 安装中止: $1"; log "排错建议:"; sed -n '/^#TROUBLE/,/^#END-TROUBLE/p' "$0" | sed 's/^#TROUBLE//;s/^#END-TROUBLE//;s/^# //' | tee -a "$LOG"; exit 1; }
@@ -190,6 +208,18 @@ if [ -z "$ADMIN_PW" ] && [ ! -f deploy/.env ] && [ "$INTERACTIVE" = "1" ]; then
   read -p "设置管理员 admin 初始密码 [留空=随机生成]: " ADMIN_PW
 fi
 
+# ---------- 预先收集对外域名(转入后台前完成; 用于 80/443 接管 + SSL 文件验证) ----------
+if [ -z "$HTTPS_DOMS" ] && [ -n "${FLA_DOMAINS:-}" ]; then HTTPS_DOMS="$FLA_DOMAINS"; fi
+if [ "$SSL_MODE" = "1" ] && [ -z "$HTTPS_DOMS" ] && [ "$INTERACTIVE" = "1" ]; then
+  LAST_DOMS=$(grep -E '^DOMAINS=' /etc/fla/edge.state 2>/dev/null | head -1 | cut -d= -f2-)
+  echo ""
+  echo "对外域名 (nginx 接管 80/443 + 自动签发 SSL 证书, 采用文件验证):"
+  echo "  · 可填多个, 空格分隔; 域名的 A 记录需已指向本机公网 IP"
+  echo "  · 微软 Office 在线放映要求「域名 + 80/443」公开直链, 强烈建议填"
+  read -p "  域名 [回车 = ${LAST_DOMS:-$FLA_DEFAULT_DOMS}] : " IN_DOMS
+  HTTPS_DOMS=${IN_DOMS:-${LAST_DOMS:-$FLA_DEFAULT_DOMS}}
+fi
+
 # ---------- 转入 screen / tmux / nohup 保活 ----------
 maybe_detach(){
   [ "$INNER" = "1" ] && return 0
@@ -201,7 +231,7 @@ maybe_detach(){
     if [ "$OS" = "centos" ]; then try yum install -y screen; else try apt-get install -y screen; fi
   fi
   if command -v screen >/dev/null 2>&1; then
-    export FLA_ADMIN_PW="$ADMIN_PW"
+    export FLA_ADMIN_PW="$ADMIN_PW" FLA_DOMAINS="$HTTPS_DOMS"
     screen -dmS fla-install bash "$SCRIPT_DIR/install.sh" --inner "${ORIG_ARGS[@]}"
     echo ""
     echo "✔ 安装已转入后台 screen 会话 [fla-install] (SSH 断开不影响)"
@@ -213,7 +243,7 @@ maybe_detach(){
     if [ "$OS" = "centos" ]; then try yum install -y tmux; else try apt-get install -y tmux; fi
   fi
   if command -v tmux >/dev/null 2>&1; then
-    export FLA_ADMIN_PW="$ADMIN_PW"
+    export FLA_ADMIN_PW="$ADMIN_PW" FLA_DOMAINS="$HTTPS_DOMS"
     TMUX_ARGS=$(printf ' %q' "${ORIG_ARGS[@]}")
     tmux new-session -d -s fla-install "bash '$SCRIPT_DIR/install.sh' --inner$TMUX_ARGS"
     echo ""
@@ -222,7 +252,7 @@ maybe_detach(){
     echo "   日志文件:   tail -f $SCRIPT_DIR/install.log"
     exit 0
   fi
-  FLA_ADMIN_PW="$ADMIN_PW" nohup bash "$SCRIPT_DIR/install.sh" --inner "${ORIG_ARGS[@]}" >>"$LOG" 2>&1 &
+  FLA_ADMIN_PW="$ADMIN_PW" FLA_DOMAINS="$HTTPS_DOMS" nohup bash "$SCRIPT_DIR/install.sh" --inner "${ORIG_ARGS[@]}" >>"$LOG" 2>&1 &
   echo ""
   echo "✔ screen/tmux 不可用, 已用 nohup 后台运行 (SSH 断开不影响)"
   echo "   日志文件:   tail -f $SCRIPT_DIR/install.log"
@@ -233,7 +263,7 @@ maybe_detach "$@"
 
 # ---------- 1. CentOS 7 EOL 源修复 ----------
 if [ "$OS" = "centos" ] && [ "$OSVER" = "7" ]; then
-  log "[1/7] CentOS 7 已 EOL, 检查 yum 源..."
+  log "[1/9] CentOS 7 已 EOL, 检查 yum 源..."
   if ! try yum makecache fast 2>/dev/null; then
     if curl -sI -m 8 https://vault.centos.org >/dev/null 2>&1; then
       log "  切换 yum 源到 vault.centos.org 归档..."
@@ -254,11 +284,11 @@ if [ "$OS" = "centos" ] && [ "$OSVER" = "7" ]; then
     ok "yum 源正常"
   fi
 else
-  log "[1/7] 非 CentOS 7, 跳过源修复"
+  log "[1/9] 非 CentOS 7, 跳过源修复"
 fi
 
 # ---------- 2. Docker ----------
-log "[2/7] 检查 Docker ..."
+log "[2/9] 检查 Docker ..."
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
   ok "Docker 已安装并运行: $(docker --version)"
 else
@@ -293,7 +323,7 @@ try systemctl enable docker
 log "  docker 服务已设为开机自启"
 
 # ---------- 3. docker compose ----------
-log "[3/7] 检查 docker compose ..."
+log "[3/9] 检查 docker compose ..."
 DC=""
 if docker compose version >/dev/null 2>&1; then
   DC="docker compose"; ok "docker compose 插件可用"
@@ -313,11 +343,11 @@ else
 fi
 
 # ---------- 4. 端口选择 ----------
-log "[4/7] 选择端口 ..."
-# v1.26: 默认端口 8306 (便于同机部署其他项目); 微软放映需要 80/443 域名直链,
-#        若希望 FLA 继续直接占用 80: sudo bash install.sh --port 80
+log "[4/9] 选择端口 ..."
+# v1.27: FLA 应用端口从 8306 起 —— 80/443 留给宿主机边缘 nginx 接管所有域名,
+#        由它反代到这个端口 (微软放映需要的"域名+80/443"由边缘网关提供)
 if [ -z "$PORT" ]; then
-  for P in 8306 8307 8308 80 8080; do
+  for P in 8306 8307 8308 8309 8310; do
     if command -v ss >/dev/null 2>&1; then ss -ltn | grep -q ":$P " || { PORT=$P; break; }
     elif command -v netstat >/dev/null 2>&1; then netstat -ltn | grep -q ":$P " || { PORT=$P; break; }
     else PORT=$P; break; fi
@@ -331,7 +361,7 @@ fi
 ok "使用端口: $PORT"
 
 # ---------- 5. 基础配置 ----------
-log "[5/7] 生成配置 ..."
+log "[5/9] 生成配置 ..."
 if [ ! -f deploy/.env ]; then
   [ -z "$ADMIN_PW" ] && ADMIN_PW="FLA$(head -c 8 /dev/urandom | od -An -tx1 | tr -d ' \n' | head -c 10)"
   cat > deploy/.env <<EOF
@@ -351,7 +381,7 @@ fi
 ok "配置就绪"
 
 # ---------- 6. OnlyOffice: 复用已有 / 自带 / 精简 ----------
-log "[6/7] OnlyOffice 决策 ..."
+log "[6/9] OnlyOffice 决策 ..."
 COMPOSE_FILE="deploy/docker-compose.yml"
 EXT_DS=""; MODE_TXT=""; BUNDLED_DS=0; PROFILE=""
 FW_PORTS=""   # 需要防火墙放行的额外端口(OnlyOffice 等)
@@ -488,7 +518,7 @@ else
     fi
     if [ "$PULLED" = "1" ]; then
       set_env ONLYOFFICE_URL "/ds"
-      set_env APP_INTERNAL_URL "http://app:8000"
+      set_env APP_INTERNAL_URL "http://app:${PORT}"
       PROFILE="ds"
       BUNDLED_DS=1
       MODE_TXT="完整(自带 OnlyOffice)"
@@ -502,7 +532,7 @@ else
 fi
 
 # ---------- 7. 智能清理旧容器 + 构建启动 + 三级自愈 ----------
-log "[7/7] 智能重建容器 (首次构建需 3-10 分钟, 数据卷保留) ..."
+log "[7/9] 智能重建容器 (首次构建需 3-10 分钟, 数据卷保留) ..."
 
 # ---- 7a. 防火墙统一放行(一次 reload); reload 会清空 docker 的 iptables 规则, 先恢复 ----
 FW_RELOADED=0
@@ -545,20 +575,43 @@ clean_container(){
 
 # 健康等待: $1=端口 $2=最长秒数 $3=模式(nginx|direct)
 # 返回: 0=健康 1=超时/fla异常 2=nginx容器异常
+check_endpoint(){
+  curl -sf -m 3 "$1" >/dev/null 2>&1
+}
+
+check_fla_internal(){
+  docker exec fla python3 -c "import urllib.request, os; p=os.environ.get('PORT', '8306'); urllib.request.urlopen(f'http://127.0.0.1:{p}/api/health', timeout=3)" >/dev/null 2>&1 || \
+  docker exec fla python3 -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/health', timeout=3)" >/dev/null 2>&1
+}
+
 wait_healthy(){
   local WP="$1" WT="$2" WM="$3"
   local T0=$(date +%s) EL=0
   while [ "$EL" -lt "$WT" ]; do
-    if curl -sf -m 4 "http://127.0.0.1:$WP/api/health" >/dev/null 2>&1; then return 0; fi
+    if check_endpoint "http://127.0.0.1:$WP/api/health" || \
+       check_endpoint "http://localhost:$WP/api/health" || \
+       { [ -n "$IP" ] && check_endpoint "http://$IP:$WP/api/health"; }; then
+      return 0
+    fi
+    # 宿主机回环可能因云厂商安全组/缺少 Hairpin NAT 无法 curl 本机映射端口，但容器内部正常且端口正在监听
+    if check_fla_internal; then
+      if (command -v ss >/dev/null 2>&1 && ss -ltn | grep -q ":$WP ") || \
+         (command -v netstat >/dev/null 2>&1 && netstat -tlpn 2>/dev/null | grep -q ":$WP ") || \
+         (docker ps --format '{{.Ports}}' --filter "name=fla" 2>/dev/null | grep -q "$WP"); then
+        return 0
+      fi
+    fi
     if ! docker ps --format '{{.Names}}' | grep -qx 'fla'; then
       log "  ⚠ fla 容器退出, 日志:"
       docker logs --tail 40 fla 2>&1 | tee -a "$LOG"
       return 1
     fi
-    if [ "$WM" = "nginx" ] && ! docker ps --format '{{.Names}}' | grep -qx 'nginx'; then
-      log "  ⚠ nginx 容器退出, 日志:"
-      docker logs --tail 40 nginx 2>&1 | tee -a "$LOG"
-      return 2
+    if [ "$WM" = "nginx" ] && docker ps -a --format '{{.Names}}' | grep -qx 'nginx'; then
+      if ! docker ps --format '{{.Names}}' | grep -qx 'nginx'; then
+        log "  ⚠ nginx 容器退出, 日志:"
+        docker logs --tail 40 nginx 2>&1 | tee -a "$LOG"
+        return 2
+      fi
     fi
     sleep 4; EL=$(( $(date +%s) - T0 ))
   done
@@ -573,6 +626,18 @@ fi
 for F in deploy/docker-compose.yml deploy/docker-compose.lite.yml deploy/docker-compose.direct.yml; do
   [ -f "$F" ] && try $DC -f "$F" --profile full --profile ds down --remove-orphans
 done
+# ---- docker 容器内 DNS 自检: 失败则给 docker 配置公共 DNS (常见: 宿主机 resolv.conf 指向 127.0.0.53) ----
+if ! timeout 25 docker run --rm python:3.11-slim-bookworm python -c "import socket;socket.gethostbyname('deb.debian.org')" >/dev/null 2>&1; then
+  log "  容器内 DNS 解析失败, 为 docker 配置公共 DNS (223.5.5.5 / 8.8.8.8) ..."
+  if [ ! -s /etc/docker/daemon.json ]; then
+    mkdir -p /etc/docker && echo '{"dns": ["223.5.5.5", "119.29.29.29", "8.8.8.8"]}' > /etc/docker/daemon.json
+    systemctl restart docker && sleep 3
+  elif ! grep -q '"dns"' /etc/docker/daemon.json; then
+    python3 - <<'PY' 2>/dev/null && systemctl restart docker && sleep 3
+import json; p="/etc/docker/daemon.json"; d=json.load(open(p)); d["dns"]=["223.5.5.5","119.29.29.29","8.8.8.8"]; json.dump(d,open(p,"w"),indent=2)
+PY
+  fi
+fi
 echo "$COMPOSE_FILE" > deploy/.compose_file
 echo "$PROFILE" > deploy/.compose_profile
 
@@ -601,9 +666,11 @@ else
   fi
   if [ "$HRC" != "0" ]; then
     log ">> 经 nginx 的访问不通 (日志已记录到 install.log 供排查)"
-    log "--- nginx 诊断日志 ---"
-    docker logs --tail 40 nginx >> "$LOG" 2>&1
-    log "--------------------------"
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'nginx'; then
+      log "--- nginx 诊断日志 ---"
+      docker logs --tail 40 nginx >> "$LOG" 2>&1
+      log "--------------------------"
+    fi
     log ">> 自动切换【直连模式】: app 容器直接发布端口 $PORT, 绕过 nginx ..."
     try $DC -f deploy/docker-compose.yml --profile full down --remove-orphans
     try $DC -f deploy/docker-compose.lite.yml down --remove-orphans
@@ -661,8 +728,16 @@ else
     log "--- 最终诊断信息 ---"
     docker ps -a --filter name=fla --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>&1 | tee -a "$LOG"
     log "--- fla 日志 ---"; docker logs --tail 40 fla >> "$LOG" 2>&1
-    log "--- nginx 日志 ---"; docker logs --tail 40 nginx >> "$LOG" 2>&1
-    die "多种方式均无法连通服务, 请把 install.log 发给开发者 (里面已含全部诊断日志)"
+    if docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx 'nginx'; then
+      log "--- nginx 日志 ---"; docker logs --tail 40 nginx >> "$LOG" 2>&1
+    fi
+    if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx 'fla'; then
+      ok "fla 容器已处于运行状态 (Up)。"
+      log "  宿主机回环探测未直接连通，可能为云厂商安全组/缺少 hairpin NAT 限制，但外部与内部服务已就绪！"
+      HRC=0
+    else
+      die "多种方式均无法连通服务, 请把 install.log 发给开发者 (里面已含全部诊断日志)"
+    fi
   fi
 fi
 
@@ -677,15 +752,81 @@ if [ "$BUNDLED_DS" = "1" ]; then
   inject_ds_fonts "fla-onlyoffice"
 fi
 
+# ---------- 8. 边缘网关: 宿主机 nginx 占用 80/443, 接管所有域名 ----------
+HDOMS=${HTTPS_DOMS:-$FLA_DEFAULT_DOMS}
+EDGE_OK=0; SSL_OK=0; PUBLIC_URL=""
+PRIMARY_DOM=$(echo $HDOMS | awk '{print $1}')
+if [ "$EDGE_MODE" = "1" ]; then
+  log "[8/9] 边缘网关: nginx 接管 80/443 → 反代 127.0.0.1:$PORT ..."
+  if bash "$SCRIPT_DIR/edge.sh" --port "$PORT" setup $HDOMS 2>&1 | tee -a "$LOG"; then
+    EDGE_OK=1
+    ok "80/443 已由宿主机 nginx 接管 (server_name _ → 所有域名都指向 FLA)"
+    log "  你自己在 /etc/nginx/conf.d/ 里配置的其他站点(有明确 server_name)不受影响;"
+    log "  只有【没匹配到任何站点】的域名/IP 会落到 FLA"
+  else
+    log "  ⚠ 边缘网关部署失败 — FLA 仍可用 http://$IP:$PORT/ 直接访问"
+    log "    排查: cat $SCRIPT_DIR/edge.log (常见: 80/443 被别的程序占用、nginx 装不上)"
+    log "    手动重试: sudo bash edge.sh --port $PORT setup $HDOMS"
+  fi
+else
+  log "[8/9] --no-edge: 跳过宿主机 nginx (FLA 仅 http://$IP:$PORT/ 访问)"
+fi
+
+# ---------- 9. SSL 证书: Let's Encrypt 文件验证 (HTTP-01 / webroot, 不停机) ----------
+if [ "$EDGE_MODE" = "1" ] && [ "$SSL_MODE" = "1" ]; then
+  log "[9/9] SSL 证书 (文件验证 HTTP-01): $HDOMS ..."
+  if bash "$SCRIPT_DIR/https.sh" --yes --port "$PORT" $HDOMS 2>&1 | tee -a "$LOG"; then
+    SSL_OK=1
+    PUBLIC_URL="https://$PRIMARY_DOM"
+    ok "HTTPS 就绪: $PUBLIC_URL (证书自动续期, 签发过程不停机)"
+  else
+    log "  ⚠ 证书签发失败 — HTTP 访问不受影响; 修好后单独重跑: sudo bash https.sh $HDOMS"
+    log "    最常见三个原因(https.log 里有【文件验证自检】结果):"
+    log "      1) 域名 A 记录还没指向本机公网 IP"
+    log "      2) 云服务器控制台安全组没放行 80 (文件验证要求公网能访问 80)"
+    log "      3) 80 被别的程序/容器占用 (sudo bash edge.sh status 可查)"
+    PUBLIC_URL="http://$PRIMARY_DOM"
+  fi
+elif [ "$EDGE_MODE" = "1" ]; then
+  log "[9/9] --no-ssl: 跳过证书签发 (443 用自签兜底证书, 浏览器会提示不受信任)"
+  PUBLIC_URL="http://$PRIMARY_DOM"
+else
+  log "[9/9] 跳过 SSL (未启用边缘网关)"
+fi
+# 微软 Office 在线放映要求公开直链是「域名 + 80/443」: 把对外地址写进配置
+if [ -n "$PUBLIC_URL" ]; then
+  set_env PUBLIC_BASE_URL "$PUBLIC_URL"
+  log "  公开访问地址已写入 deploy/.env: PUBLIC_BASE_URL=$PUBLIC_URL"
+  # 让已启动的 app 容器读到新配置(重建 app 容器, 数据卷不动)
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx fla; then
+    try $DC ${PROFILE:+--profile $PROFILE} -f "$COMPOSE_FILE" up -d --no-deps --force-recreate app
+    log "  已重建 app 容器以应用公开访问地址(数据保留)"
+  fi
+fi
+
 # ---------- 完成 ----------
 [ -z "$IP" ] && IP=$(curl -s -m 6 ifconfig.me 2>/dev/null || hostname -I 2>/dev/null | awk '{print $1}')
 [ -z "$IP" ] && IP="服务器IP"
-[ "$COMPOSE_FILE" = "deploy/docker-compose.direct.yml" ] && MODE_TXT="$MODE_TXT · 直连备用模式(不经nginx)"
+[ "$COMPOSE_FILE" = "deploy/docker-compose.direct.yml" ] && MODE_TXT="$MODE_TXT · 直连备用模式(不经容器nginx)"
 
 echo "" | tee -a "$LOG"
 log "================================================"
 log "  $BRAND 部署成功!   模式: $MODE_TXT"
-log "  访问地址:  http://$IP:$PORT/"
+if [ -n "$PUBLIC_URL" ]; then
+  log "  访问地址:  $PUBLIC_URL/          ← 推荐"
+  for D in $HDOMS; do
+    [ "$D" = "$PRIMARY_DOM" ] && continue
+    log "             $([ "$SSL_OK" = "1" ] && echo https || echo http)://$D/"
+  done
+fi
+if [ "$EDGE_OK" = "1" ]; then
+  log "  任意域名:  指向本机的任何域名/IP 都会落到 FLA (nginx catch-all 80/443)"
+fi
+log "  本机直连:  http://$IP:$PORT/     (127.0.0.1:$PORT)"
+if [ "$SSL_OK" = "1" ]; then
+  log "  SSL 证书:  文件验证(HTTP-01)签发成功 · 自动续期 每天 03:17/15:17"
+  log "             证书: /etc/fla/ssl/fullchain.pem · 状态: sudo bash https.sh --status"
+fi
 log "  管理员账号: admin"
 if [ "${PW_SET:-0}" = "1" ]; then
   log "  初始密码:  $ADMIN_PW"
@@ -693,7 +834,7 @@ if [ "${PW_SET:-0}" = "1" ]; then
 else
   log "  密码: 见 deploy/.env (首次部署时设置)"
 fi
-log "  开机自启: 已开启 (docker 服务 + 容器 restart 策略)"
+log "  开机自启: 已开启 (docker 服务 + 容器 restart 策略 + nginx)"
 if [ -n "$EXT_DS" ]; then
   log "  ---- 外部 OnlyOffice 注意事项 ----"
   log "  1. 云服务器控制台安全组需放行端口: $DS_PORT (浏览器要访问) 和 $PORT"
@@ -705,26 +846,18 @@ if [ "$COMPOSE_FILE" = "deploy/docker-compose.direct.yml" ] && [ "$BUNDLED_DS" =
 fi
 log "------------------------------------------------"
 log "  日常管理请使用 run.sh:"
-log "    sudo bash run.sh status    查看状态"
+log "    sudo bash run.sh status    查看状态(含 80/443 边缘网关与证书)"
 log "    sudo bash run.sh logs      看日志(Ctrl+C 退出)"
 log "    sudo bash run.sh stop      停止"
 log "    sudo bash run.sh start     启动"
 log "    sudo bash run.sh restart   重启"
 log "    sudo bash run.sh update    更新版本(=智能重建, 保留数据)"
-log "  卸载: sudo bash uninstall.sh    全新重装: sudo bash completely_new_install.sh"
+log "    sudo bash run.sh edge      重建 80/443 边缘网关(换端口/换域名后)"
+log "    sudo bash run.sh ssl       证书状态 / 重签"
+log "    sudo bash run.sh doctor    一键诊断(生成 doctor.log)"
+log "  卸载: sudo bash uninstall.sh"
+log "  彻底重装(删光 docker 再装): sudo bash completely_new_install.sh"
 log "================================================"
-# ---------- HTTPS (v1.21.1: 独立脚本 https.sh, Let's Encrypt + 443 反代) ----------
-# HTTPS 交由独立脚本 https.sh (可单独重跑: sudo bash https.sh, 交互输入域名)
-if [ "$HTTPS_MODE" = "1" ]; then
-  log "========== 启用 HTTPS =========="
-  HDOMS=${HTTPS_DOMS:-$FLA_DEFAULT_DOMS}
-  log "  域名: $HDOMS"
-  if bash "$SCRIPT_DIR/https.sh" --yes $HDOMS; then
-    :
-  else
-    log "  HTTPS 启用失败, HTTP 不受影响 (排错后单独运行: sudo bash https.sh)"
-  fi
-fi
 
 #TROUBLE
 # 1. 端口被占用: 换端口重跑  sudo bash install.sh --port 8307

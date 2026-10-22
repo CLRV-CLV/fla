@@ -1,23 +1,31 @@
-# FLA 直连备用模式: app 直接发布端口, 不经 nginx (install.sh 在 nginx 模式失败时自动切换)
-# 完整直连时 OnlyOffice 也直接发布端口, 由 install.sh 以 --profile full 启用
+# FLA 直连模式: app 容器直接发布端口
 services:
   app:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      network: host   # 构建时用宿主机网络/DNS (避免 docker 网桥 DNS 解析失败)
     container_name: fla
     restart: unless-stopped
+    command: ["sh", "-c", "exec uvicorn server.main:app --host 0.0.0.0 --port \"$${PORT:-8306}\" --workers 1 --proxy-headers --forwarded-allow-ips '*'"]
     ports:
-      - "${PORT:-8306}:8000"
+      - "${PORT:-8306}:${PORT:-8306}"
+      - "${RTMP_PORT:-1935}:1935"   # iPhone 整屏投屏 (RTMP)
     environment:
+      - PORT=${PORT:-8306}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - TZ=Asia/Hong_Kong
       - MALLOC_ARENA_MAX=2   # v1.26 内存优化: 限制 glibc 分配区
       - ONLYOFFICE_URL=${ONLYOFFICE_URL:-}
       - ONLYOFFICE_JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-}
-      - APP_INTERNAL_URL=${APP_INTERNAL_URL:-http://127.0.0.1:8000}
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+      - APP_INTERNAL_URL=${APP_INTERNAL_URL:-http://127.0.0.1:${PORT:-8306}}
     volumes:
       - fla-data:/data
+      - ../web:/app/web
+      - ../server:/app/server
+      - ../desktop:/app/desktop
+      - /etc/fla/ssl:/etc/fla/ssl:ro   # 只读: 用 HTTPS 证书签名 iOS 描述文件
     mem_limit: 1500m
     logging:
       driver: json-file

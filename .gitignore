@@ -1,0 +1,40 @@
+# ---- Python ----
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# ---- FLA 运行时数据 (上传/转换/数据库/头像) ----
+data/
+*.db
+*.db-wal
+*.db-shm
+
+# ---- 部署产物 / 本地覆盖 ----
+deploy/.env
+*.log
+node_modules/
+/dist/
+build/
+!desktop/dist/
+!desktop/dist/FLA.exe
+
+# ---- 编辑器 / 系统 ----
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.swp
+.agents/
+.claude/
+agent/
+skills-lock.json
+desktop/native/FLA_all.c
+desktop/dist/FLA.exe
+web/downloads/FLA.exe
+
+server/BUILD

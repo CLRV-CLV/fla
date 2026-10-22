@@ -28,28 +28,48 @@
         headers['Content-Type'] = 'application/json';
         opts.body = JSON.stringify(opts.json);
         opts.method = opts.method || 'POST';
+      } else if (opts.method && opts.method !== 'GET' && opts.method !== 'HEAD' && !opts.form && opts.body === undefined) {
+        headers['Content-Type'] = 'application/json';
+        opts.body = '{}';
       }
       if (opts.form) { opts.body = opts.form; opts.method = opts.method || 'POST'; }
       let r;
+      const timeoutMs = opts.timeout || (opts.form ? 0 : 8000);
+      let ctrl = null, timer = null;
+      if (timeoutMs > 0 && typeof AbortController !== 'undefined') {
+        ctrl = new AbortController();
+        opts.signal = ctrl.signal;
+        timer = setTimeout(() => ctrl.abort(), timeoutMs);
+      }
       try {
-        r = await fetch(path, Object.assign({}, opts, { headers }));
+        try {
+          r = await fetch(path, Object.assign({}, opts, { headers }));
+        } catch (e) {
+          if (e && e.name === 'AbortError') throw new Error('请求超时，请检查网络');
+          throw new Error('网络错误，请检查连接');
+        }
+        if (r.status === 401 && path.indexOf('/api/auth/login') < 0 && path.indexOf('/api/auth/register') < 0 && path.indexOf('/api/auth/qr/') < 0) {
+          API.setToken('');
+          location.hash = '#/login';
+          throw new Error('登录已过期，请重新登录');
+        }
+        let data = null;
+        const ct = r.headers.get('content-type') || '';
+        // Keep the deadline active until the response body is fully consumed. Clearing it after
+        // fetch() resolves only covers headers; a stalled JSON body otherwise leaves pages loading forever.
+        if (ct.indexOf('json') >= 0) data = await r.json();
+        if (!r.ok) throw new Error(errText(data) || ('请求失败 (' + r.status + ')'));
+        return data;
       } catch (e) {
-        throw new Error('网络错误，请检查连接');
+        if (e && e.name === 'AbortError') throw new Error('请求超时，请检查网络');
+        throw e;
+      } finally {
+        if (timer) clearTimeout(timer);
       }
-      if (r.status === 401 && path.indexOf('/api/auth/login') < 0 && path.indexOf('/api/auth/register') < 0) {
-        API.setToken('');
-        location.hash = '#/login';
-        throw new Error('登录已过期，请重新登录');
-      }
-      let data = null;
-      const ct = r.headers.get('content-type') || '';
-      if (ct.indexOf('json') >= 0) data = await r.json();
-      if (!r.ok) throw new Error(errText(data) || ('请求失败 (' + r.status + ')'));
-      return data;
     },
 
     get(p) { return API.req(p); },
-    post(p, json) { return API.req(p, { json, method: 'POST' }); },   /* v1.26 修: 无 body 也保持 POST (qr/ticket) */
+    post(p, json, timeout) { return API.req(p, { json, method: 'POST', timeout: timeout || 0 }); },   /* v3.6: 可选超时(AI 生成较慢) */   /* v1.26 修: 无 body 也保持 POST (qr/ticket) */
     put(p, json) { return API.req(p, { json, method: 'PUT' }); },
     patch(p, json) { return API.req(p, { json, method: 'PATCH' }); },   /* v1.26: 论坛/聊天/公告 */
     del(p) { return API.req(p, { method: 'DELETE' }); },

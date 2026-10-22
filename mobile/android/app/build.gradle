@@ -1,0 +1,40 @@
+plugins { id "com.android.application" }
+
+android {
+    namespace "top.clrv.fla"
+    compileSdk 34
+    buildFeatures { buildConfig true }
+    defaultConfig {
+        applicationId "top.clrv.fla"
+        minSdk 24
+        targetSdk 34
+        versionCode 7
+        versionName "1.4.1"
+    }
+    signingConfigs {
+        fla {
+            storeFile file("../keystore/fla.p12")
+            storeType "pkcs12"
+            storePassword "flafla"
+            keyAlias "fla"
+            keyPassword "flafla"
+        }
+    }
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.fla
+        }
+    }
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_17
+        targetCompatibility JavaVersion.VERSION_17
+    }
+}
+
+dependencies {
+    // Open-source Material 3 components for the native dashboard and ZXing for native QR scanning.
+    implementation "com.google.android.material:material:1.12.0"
+    implementation "com.journeyapps:zxing-android-embedded:4.3.0"
+}
+

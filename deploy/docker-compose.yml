@@ -3,35 +3,43 @@ services:
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+      network: host   # 构建时用宿主机网络/DNS (避免 docker 网桥 DNS 解析失败)
     container_name: fla
     restart: unless-stopped
-    expose:
-      - "8000"
+    command: ["sh", "-c", "exec uvicorn server.main:app --host 0.0.0.0 --port \"$${PORT:-8306}\" --workers 1 --proxy-headers --forwarded-allow-ips '*'"]
+    ports:
+      - "${PORT:-8306}:${PORT:-8306}"
+      - "${RTMP_PORT:-1935}:1935"   # iPhone 整屏投屏 (RTMP)
     environment:
+      - PORT=${PORT:-8306}
       - ADMIN_PASSWORD=${ADMIN_PASSWORD:-}
       - TZ=Asia/Hong_Kong
       - MALLOC_ARENA_MAX=2   # v1.26 内存优化: 限制 glibc 分配区
-      - ONLYOFFICE_URL=${ONLYOFFICE_URL:-/ds}
+      - ONLYOFFICE_URL=${ONLYOFFICE_URL:-}
       - ONLYOFFICE_JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-}
-      - APP_INTERNAL_URL=http://app:8000
+      - PUBLIC_BASE_URL=${PUBLIC_BASE_URL:-}
+      - APP_INTERNAL_URL=http://app:${PORT:-8306}
     volumes:
       - fla-data:/data
-    mem_limit: 1200m
+      - ../web:/app/web
+      - ../server:/app/server
+      - ../desktop:/app/desktop
+      - /etc/fla/ssl:/etc/fla/ssl:ro   # 只读: 用 HTTPS 证书签名 iOS 描述文件
+    mem_limit: 1500m
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "5"
 
-  # OnlyOffice 文档服务器: Office 文档原样查看与动画放映
-  # (若内存吃紧或不需要动画, 可用 deploy/docker-compose.lite.yml)
+  # OnlyOffice 文档服务器: Office 文档原样查看与动画放映 (默认启用微软在线渲染, 此处仅按需 profiles: ds)
   documentserver:
     image: onlyoffice/documentserver:latest
     container_name: fla-onlyoffice
     profiles: ["ds"]
     restart: unless-stopped
-    expose:
-      - "80"
+    ports:
+      - "${DS_PORT:-8880}:80"
     environment:
       - JWT_ENABLED=true
       - JWT_SECRET=${ONLYOFFICE_JWT_SECRET:-}
@@ -44,20 +52,6 @@ services:
       options:
         max-size: "20m"
         max-file: "3"
-
-  nginx:
-    build:
-      context: ..
-      dockerfile: deploy/nginx/Dockerfile
-    container_name: nginx
-    restart: unless-stopped
-    ports:
-      - "${PORT:-8306}:80"
-    environment:
-      - FLA_MODE=full
-    depends_on:
-      - app
-    mem_limit: 200m
 
 volumes:
   fla-data:

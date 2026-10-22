@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FLA 网络诊断</title>
+<style>
+  body { margin: 0; background: #fafafa; color: #18181b; font: 14px/1.6 system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif; }
+  .wrap { max-width: 760px; margin: 6vh auto 40px; padding: 0 16px; }
+  h1 { font-size: 20px; margin: 0 0 6px; }
+  .sub { color: #71717a; font-size: 13px; margin-bottom: 20px; }
+  .card { background: #fff; border: 1px solid #e4e4e7; border-radius: 14px; padding: 20px 22px; margin-bottom: 16px; }
+  button { padding: 10px 20px; border-radius: 10px; border: none; background: #09090b; color: #fff; font-size: 13.5px; font-weight: 600; cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  button.ghost { background: #fff; color: #18181b; border: 1px solid #e4e4e7; }
+  table { width: 100%; border-collapse: collapse; font-size: 13px; }
+  th { text-align: left; padding: 7px 10px; color: #71717a; font-weight: 600; border-bottom: 1px solid #e4e4e7; }
+  td { padding: 7px 10px; border-bottom: 1px solid #f4f4f5; }
+  .ok { color: #065f46; font-weight: 600; }
+  .bad { color: #b91c1c; font-weight: 600; }
+  .slow { color: #92400e; font-weight: 600; }
+  .verdict { margin-top: 14px; padding: 12px 14px; border-radius: 10px; background: #f4f4f5; font-size: 13px; line-height: 1.8; white-space: pre-wrap; }
+  .meta { color: #a1a1aa; font-size: 12px; margin-top: 10px; word-break: break-all; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>FLA 网络诊断</h1>
+  <div class="sub">逐项检测首页全部资源的加载情况与压缩状态，用于定位"标题可见但页面空白"类问题。请在中国大陆的机器上打开本页并截图。</div>
+  <div class="card">
+    <button id="go">开始检测</button>
+    <button class="ghost" id="copy" style="margin-left:10px;">复制结果</button>
+    <div id="info" class="meta"></div>
+  </div>
+  <div class="card" id="out" hidden>
+    <table>
+      <thead><tr><th>资源</th><th>状态</th><th>耗时</th><th>传输大小</th><th>压缩</th></tr></thead>
+      <tbody id="rows"></tbody>
+    </table>
+    <div class="verdict" id="verdict"></div>
+  </div>
+</div>
+<script>
+(function () {
+  var targets = [
+    { name: 'API /api/health', url: '/api/health' },
+    { name: 'style.css (样式表·阻塞渲染)', url: '/style.css?v=148' },
+    { name: 'qrcode.min.js', url: '/lib/qrcode/qrcode.min.js?v=134' },
+    { name: 'api.js', url: '/js/api.js?v=134' },
+    { name: 'ui.js', url: '/js/ui.js?v=137' },
+    { name: 'app.js (主程序)', url: '/js/app.js?v=138' },
+    { name: 'admin.js', url: '/js/admin.js?v=134' },
+    { name: 'chat.js', url: '/js/chat.js?v=134' },
+    { name: 'remote.js', url: '/js/remote.js?v=137' },
+    { name: 'msstage.js (放映台)', url: '/js/msstage.js?v=139' },
+    { name: 'viewer.js', url: '/js/viewer.js?v=134' }
+  ];
+  var results = [];
+  var info = document.getElementById('info');
+  info.textContent = '地址: ' + location.origin + '   协议: ' + location.protocol + '   时间: ' + new Date().toLocaleString();
+
+  function cls(ms, ok) { if (!ok) return 'bad'; if (ms > 3000) return 'slow'; return 'ok'; }
+  function fmtSize(b) { return b > 1048576 ? (b / 1048576).toFixed(2) + ' MB' : Math.round(b / 1024) + ' KB'; }
+
+  async function testOne(t) {
+    var r = { name: t.name, ok: false, ms: 0, size: 0, enc: '—', err: '' };
+    var t0 = performance.now();
+    try {
+      var resp = await fetch(t.url, { cache: 'no-store' });
+      var blob = await resp.blob();
+      r.ms = Math.round(performance.now() - t0);
+      r.ok = resp.ok;
+      r.size = blob.size;
+      r.enc = resp.headers.get('content-encoding') || '无';
+      if (!resp.ok) r.err = 'HTTP ' + resp.status;
+    } catch (e) {
+      r.ms = Math.round(performance.now() - t0);
+      r.err = (e && e.message) ? e.message : '网络错误/被重置';
+    }
+    return r;
+  }
+
+  function render() {
+    var rows = document.getElementById('rows');
+    rows.innerHTML = results.map(function (r) {
+      return '<tr><td>' + r.name + '</td>' +
+        '<td class="' + cls(r.ms, r.ok) + '">' + (r.ok ? '成功' : '失败 · ' + r.err) + '</td>' +
+        '<td>' + r.ms + ' ms</td><td>' + (r.ok ? fmtSize(r.size) : '—') + '</td>' +
+        '<td>' + (r.enc === 'gzip' ? '<span class="ok">gzip ✓</span>' : r.enc) + '</td></tr>';
+    }).join('');
+
+    var fail = results.filter(function (r) { return !r.ok; });
+    var slow = results.filter(function (r) { return r.ok && r.ms > 3000; });
+    var gz = results.filter(function (r) { return r.ok && r.size > 1024 && r.enc === 'gzip'; });
+    var v = [];
+    if (!fail.length && !slow.length) v.push('✅ 全部资源加载正常且速度良好。如果主页面仍有问题，请刷新重试并联系管理员。');
+    if (fail.length) v.push('❌ 有 ' + fail.length + ' 个资源加载失败（' + fail.map(function (r) { return r.name; }).join('、') + '）。若失败发生在多个大文件上，多为跨境链路不稳定或运营商拦截；请尝试 HTTPS 访问或更换网络（如手机热点）对比。');
+    if (slow.length) v.push('⚠ 以下资源耗时超过 3 秒：' + slow.map(function (r) { return r.name + ' (' + r.ms + 'ms)'; }).join('、') + '。链路带宽受限，但多次刷新后浏览器会缓存已下载部分。');
+    if (results.length && !gz.length) {
+      var anyBig = results.some(function (r) { return r.ok && r.size > 20000; });
+      if (anyBig) v.push('ℹ 服务器未返回 gzip 压缩 —— 说明服务端尚未更新到修复版本，请管理员执行 git pull 并重启/重建服务。');
+    }
+    if (location.protocol === 'http:') v.push('ℹ 当前使用 HTTP 明文访问。跨境 HTTP 长传输更容易被中断，建议管理员配置 HTTPS 域名（仓库自带 edge.sh/https.sh 一键签发证书）。');
+    document.getElementById('verdict').textContent = v.join('\n');
+    document.getElementById('out').hidden = false;
+  }
+
+  document.getElementById('go').onclick = async function () {
+    var btn = this;
+    btn.disabled = true; btn.textContent = '检测中…';
+    results = [];
+    for (var i = 0; i < targets.length; i++) {
+      var r = await testOne(targets[i]);
+      results.push(r);
+      render();
+    }
+    btn.disabled = false; btn.textContent = '重新检测';
+  };
+
+  document.getElementById('copy').onclick = function () {
+    var text = 'FLA 网络诊断 ' + new Date().toLocaleString() + '\n地址: ' + location.origin + '\n' +
+      results.map(function (r) {
+        return r.name + ' | ' + (r.ok ? '成功' : '失败(' + r.err + ')') + ' | ' + r.ms + 'ms | ' + (r.ok ? fmtSize(r.size) : '-') + ' | ' + r.enc;
+      }).join('\n') + '\n' + (document.getElementById('verdict').textContent || '');
+    try { navigator.clipboard.writeText(text); this.textContent = '已复制'; var b = this; setTimeout(function () { b.textContent = '复制结果'; }, 1500); } catch (e) { }
+  };
+})();
+</script>
+</body>
+</html>

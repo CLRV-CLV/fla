@@ -1,6 +1,8 @@
 """FLA - 认证路由: 注册(邀请码) / 登录 / 个人信息 / 改密"""
 import re
 
+from typing import Optional
+
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
@@ -17,7 +19,7 @@ class RegIn(BaseModel):
     username: str
     password: str
     nickname: str = ""
-    invite_code: str
+    invite_code: Optional[str] = ""
 
 
 class LoginIn(BaseModel):
@@ -34,9 +36,29 @@ class QrApproveIn(BaseModel):
     ticket: str
 
 
+@router.get("/theme/{name}")
+def theme_file(name: str):
+    """管理员上传的背景图(公开, 登录页也要用)"""
+    import re as _re
+    from fastapi.responses import FileResponse
+    if not _re.match(r"^[A-Za-z0-9_.-]+$", name):
+        raise HTTPException(404, "不存在")
+    p = db.DATA / "theme" / name
+    if not p.is_file():
+        raise HTTPException(404, "不存在")
+    return FileResponse(str(p), headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
 @router.get("/config")
 def config():
-    return {"registration_open": db.get_setting("registration_open", "1") == "1", "site_bg": db.get_setting("site_bg", "")}
+    return {
+        "registration_open": db.get_setting("registration_open", "1") == "1",
+        "site_bg": db.get_setting("site_bg", ""),
+        "login_bg": db.get_setting("login_bg", ""),
+        "client_bg": db.get_setting("client_bg", ""),
+        "ui_opacity": int(db.get_setting("ui_opacity", "100") or 100),
+        "toolbar_keep": db.get_setting("toolbar_keep", "1") == "1",
+    }
 
 
 @router.post("/register")
@@ -49,7 +71,10 @@ def register(body: RegIn):
         raise HTTPException(400, "密码至少 6 位")
     if len(body.password.encode()) > 72:
         raise HTTPException(400, "密码过长")
-    inv = db.q1("SELECT * FROM invite_codes WHERE code=?", (body.invite_code.strip(),))
+    invite = (body.invite_code or "").strip()
+    if not invite:
+        raise HTTPException(400, "请填写邀请码")
+    inv = db.q1("SELECT * FROM invite_codes WHERE code=?", (invite,))
     if not inv:
         raise HTTPException(400, "邀请码无效")
     if inv["expires_at"] and inv["expires_at"] < db.now():
@@ -63,9 +88,10 @@ def register(body: RegIn):
     if cur.rowcount == 0:
         raise HTTPException(400, "邀请码已被用完")
     quota = int(db.get_setting("default_quota_mb", "500")) * 1024 * 1024
-    db.ex("INSERT INTO users(username,password_hash,nickname,quota_bytes,created_at) VALUES(?,?,?,?,?)",
+    gid = inv["group_id"] if "group_id" in inv.keys() else 1
+    db.ex("INSERT INTO users(username,password_hash,nickname,quota_bytes,created_at,group_id) VALUES(?,?,?,?,?,?)",
           (body.username, hash_password(body.password),
-           (body.nickname or "").strip()[:32] or body.username, quota, db.now()))
+           (body.nickname or "").strip()[:32] or body.username, quota, db.now(), gid))
     u = db.q1("SELECT * FROM users WHERE username=?", (body.username,))
     return {"token": make_token(u), "user": user_public(u)}
 
@@ -103,10 +129,38 @@ def change_password(body: PwIn, request: Request):
 # 流程: 登录页 POST /qr/ticket 生成一次性票据并展示二维码(内容=授权URL)
 #       → 已登录设备打开该 URL(或App内扫码) POST /qr/approve 授权
 #       → 登录页轮询 GET /qr/status 取回 token
+import os
 import secrets as _secrets
+import sys
 import time as _time
 
 QR_TTL = 150  # 票据有效期(秒)
+
+# 导入专业 Python qrcode 库（支持系统环境与内置 vendor）
+try:
+    import qrcode
+    import qrcode.image.svg
+except ImportError:
+    _vendor = os.path.join(os.path.dirname(os.path.dirname(__file__)), "vendor")
+    if _vendor not in sys.path:
+        sys.path.insert(0, _vendor)
+    try:
+        import qrcode
+        import qrcode.image.svg
+    except ImportError:
+        qrcode = None
+
+
+def generate_qr_svg(url: str) -> str:
+    """使用专业 Python qrcode 库在服务端生成原生矢量 SVG 二维码"""
+    if qrcode is not None:
+        try:
+            factory = qrcode.image.svg.SvgPathImage
+            img = qrcode.make(url, image_factory=factory, box_size=10, border=2)
+            return img.to_string(encoding="unicode")
+        except Exception as e:
+            print("[QR] generate_qr_svg error:", e)
+    return ""
 
 
 def _qr_gc():
@@ -118,12 +172,34 @@ def _qr_gc():
 
 
 @router.post("/qr/ticket")
-def qr_ticket():
+def qr_ticket(request: Request):
     _qr_gc()
     ticket = "qr" + _secrets.token_hex(16)
     db.ex("INSERT INTO qr_tickets(ticket,expires,status) VALUES(?,?,?)",
           (ticket, _time.time() + QR_TTL, "pending"))
-    return {"ticket": ticket, "expires_in": QR_TTL}
+    # 构建授权 URL，优先使用配置的 PUBLIC_BASE_URL
+    base_url = str(request.base_url).rstrip("/")
+    pub_base = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/")
+    if pub_base:
+        base_url = pub_base
+    qr_url = f"{base_url}/#/qr-approve?ticket={ticket}"
+    svg = "" if request.query_params.get("lite") else generate_qr_svg(qr_url)
+    return {"ticket": ticket, "expires_in": QR_TTL, "url": qr_url, "qr_svg": svg}
+
+
+@router.get("/qr/image")
+def qr_image(ticket: str, request: Request):
+    """二维码图片兜底: 浏览器端二维码库加载失败(老内核/被拦截)时用 <img> 直接显示"""
+    from fastapi.responses import Response
+    t = db.q1("SELECT ticket FROM qr_tickets WHERE ticket=?", ((ticket or "").strip(),))
+    if not t:
+        raise HTTPException(404, "invalid")
+    base = os.environ.get("PUBLIC_BASE_URL", "").strip().rstrip("/") or str(request.base_url).rstrip("/")
+    origin = (request.query_params.get("o") or "").strip().rstrip("/")
+    if origin.startswith(("http://", "https://")) and len(origin) < 200:
+        base = origin
+    svg = generate_qr_svg(f"{base}/#/qr-approve?ticket={t['ticket']}")
+    return Response(svg, media_type="image/svg+xml", headers={"Cache-Control": "no-store"})
 
 
 @router.post("/qr/approve")

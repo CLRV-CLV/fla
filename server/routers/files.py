@@ -16,7 +16,7 @@ from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 
-from .. import converter, db
+from .. import converter, db, msview
 from ..deps import require_user
 from ..security import secret
 
@@ -25,7 +25,7 @@ router = APIRouter(prefix="/api/files")
 # ---- OnlyOffice 配置 (docker-compose 里启用) ----
 OO_URL = os.environ.get("ONLYOFFICE_URL", "").rstrip("/")          # 浏览器访问路径, 如 /ds
 OO_JWT = os.environ.get("ONLYOFFICE_JWT_SECRET", "").strip()       # 与 documentserver 共享的 JWT 密钥(可为空=不签名)
-APP_INTERNAL = os.environ.get("APP_INTERNAL_URL", "http://app:8000").rstrip("/")  # documentserver 回源地址
+APP_INTERNAL = os.environ.get("APP_INTERNAL_URL", f"http://app:{os.environ.get('PORT', '8306')}").rstrip("/")  # documentserver 回源地址
 OO_ENABLED = bool(OO_URL)
 
 OFFICE = converter.CONVERTIBLE
@@ -241,11 +241,12 @@ def share_raw(token: str, fname: str, request: Request):
 
 
 def _public_base(request: Request) -> str:
-    """公开访问基地址: 管理员配置优先, 否则当前请求 origin."""
-    base = (db.get_setting("public_base_url") or "").strip().rstrip("/")
-    if base:
-        return base
-    return str(request.base_url).rstrip("/")
+    """公开访问基地址: 管理后台设置 > deploy/.env(PUBLIC_BASE_URL) > 当前请求 origin.
+
+    v1.27: 部署脚本会把边缘网关的对外域名写进 PUBLIC_BASE_URL,
+    于是微软在线放映拿到的直链天然是 https://域名 (满足微软"域名+80/443"的要求)。
+    """
+    return msview.public_base(request)
 
 
 @router.get("/{fid}/share-link")
@@ -256,18 +257,60 @@ def share_link(fid: int, request: Request):
     _, row = _get_owned(fid, request)
     path = _share_path(row)
     direct = _public_base(request) + path
-    ms_ok = False
-    try:
-        from urllib.parse import urlparse
-        u = urlparse(direct)
-        host = (u.hostname or "").lower()
-        ms_ok = bool(u.scheme in ("http", "https") and host
-                     and not re.match(r"^\d+\.\d+\.\d+\.\d+$", host)
-                     and not host.endswith(".local")
-                     and (u.port is None or u.port in (80, 443)))
-    except Exception:
-        pass
-    return {"path": path, "direct": direct, "ms_ok": ms_ok}
+    return {"path": path, "direct": direct, "ms_ok": msview.ms_ok(direct)}
+
+
+@router.get("/{fid}/ms-view")
+def ms_view(fid: int, request: Request):
+    """v1.27 微软在线视图对接信息: 直链 + 每页深链模板 + 幻灯宽高比 + 真实 slide id.
+
+    前端据此实现【画布随页切换】: 翻页 = 换 iframe.src(同一 src 只改定位参数),
+    我方页码即真相, 板书层严格跟着走; 微软侧转换缓存可复用, 不必重新转换。
+    """
+    _, row = _get_owned(fid, request)
+    ext = (row["ext"] or "").lower()
+    direct = _public_base(request) + _share_path(row)
+    fam = msview.ms_family(ext)
+    size = msview.slide_size(row["stored_path"]) if fam == "ppt" else None
+    aspect = round(size[0] / size[1], 6) if size and size[1] else 0.0
+    if not aspect and fam == "ppt":
+        # 退一步: 用动画清单里的页面尺寸(转换时已解析过)
+        try:
+            f = _anim_base(row) / "anim.json"
+            if f.exists():
+                d = json.loads(f.read_text(encoding="utf-8"))
+                if d.get("slideW") and d.get("slideH"):
+                    aspect = round(d["slideW"] / d["slideH"], 6)
+        except Exception:
+            pass
+    ids = msview.slide_ids(row["stored_path"], _anim_base(row)) if fam == "ppt" else []
+    pages = int(row["pages"] or 0)
+    if fam == "ppt" and ids and pages != len(ids):
+        pages = len(ids)                      # slide id 列表就是权威页数
+    url1 = msview.embed_url(direct, ext, 1, ids[0] if ids else 0, aspect)
+    if fam in ("ppt", "word"):
+        # 深链模板: 前端把 {n} 换成页码(1-based)、{id} 换成该页真实 slide id
+        tpl = msview.embed_url(direct, ext, 987654, 876543, aspect)
+        tpl = (tpl.replace("wdStartOn=987654", "wdStartOn={n}")
+                  .replace("wdSlideId=876543", "wdSlideId={id}"))
+        if "{n}" not in tpl:
+            tpl = url1
+    else:
+        tpl = url1
+    return {
+        "provider": "ms",
+        "family": fam,
+        "ext": ext,
+        "direct": direct,
+        "ms_ok": msview.ms_ok(direct),
+        "pages": pages or 1,
+        "aspect": aspect or (1.777778 if fam == "ppt" else 0.0),
+        "slide_ids": ids,
+        "url": url1,
+        "url_tpl": tpl,
+        "deep_link": bool(fam in ("ppt", "word")),
+        "converted": bool(row["pdf_path"]) and row["status"] == "ready",
+    }
 
 
 @router.get("")
@@ -363,6 +406,17 @@ def _anim_base(row):
     if row["pdf_path"]:
         return Path(row["pdf_path"]).parent
     return db.DATA / "converted" / str(row["id"])
+
+
+@router.patch("/{fid}")
+def rename_file(fid: int, request: Request, body: dict):
+    """重命名课件/白板"""
+    _, row = _get_owned(fid, request)
+    new_name = str(body.get("name", "")).strip()
+    if not new_name:
+        raise HTTPException(400, "课件名称不能为空")
+    db.ex("UPDATE files SET orig_name=? WHERE id=?", (new_name, fid))
+    return {"ok": True, "name": new_name}
 
 
 @router.delete("/{fid}")
@@ -504,6 +558,7 @@ class AnnIn(BaseModel):
     pages: list = []
     strokes: dict = {}
     bb: dict | None = None
+    ms: dict | None = None      # v1.27: 微软放映舞台状态(板书区域/同步模式/附加板书页数)
 
 
 @router.get("/{fid}/annotations")
@@ -521,7 +576,9 @@ def get_ann(fid: int, request: Request):
 @router.put("/{fid}/annotations")
 def put_ann(fid: int, body: AnnIn, request: Request):
     _, row = _get_owned(fid, request)
-    payload = json.dumps({"pages": body.pages, "strokes": body.strokes, **({"bb": body.bb} if body.bb else {})}, ensure_ascii=False)
+    payload = json.dumps({"pages": body.pages, "strokes": body.strokes,
+                          **({"bb": body.bb} if body.bb else {}),
+                          **({"ms": body.ms} if body.ms else {})}, ensure_ascii=False)
     if len(payload) > 30 * 1024 * 1024:
         raise HTTPException(413, "批注数据过大")
     db.ex("INSERT INTO annotations(file_id,user_id,data,updated_at) VALUES(?,?,?,?) "

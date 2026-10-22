@@ -5,15 +5,124 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>FLA · FYX Lesson All</title>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23111111' stroke-width='2'%3E%3Crect x='2' y='4' width='20' height='14' rx='2'/%3E%3Cpath d='M8 21h8M12 18v3'/%3E%3C/svg%3E">
-<link rel="stylesheet" href="style.css?v=126">
+<style>
+/* 关键首屏样式内联: 大样式表跨网加载慢时, 启动画面也立即可见 (样式表后到会自然接管) */
+html, body { margin: 0; padding: 0; background: #fafafa; }
+.boot-loading {
+  position: fixed; inset: 0; display: grid; place-items: center; gap: 14px;
+  align-content: center; color: #71717a; font-size: 14px;
+  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+}
+.boot-loading::before {
+  content: ""; width: 28px; height: 28px; border-radius: 50%;
+  border: 3px solid #e4e4e7; border-top-color: #09090b;
+  animation: bootSpin .8s linear infinite;
+}
+@keyframes bootSpin { to { transform: rotate(360deg); } }
+.boot-err {
+  max-width: 640px; margin: 10vh auto; padding: 28px 32px;
+  border: 1px solid #e4e4e7; border-radius: 16px; background: #fff;
+  font-family: system-ui, -apple-system, "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: #18181b; box-shadow: 0 8px 30px rgba(0,0,0,.08);
+}
+.boot-err h2 { margin: 0 0 8px; font-size: 19px; }
+.boot-err p { margin: 0 0 14px; font-size: 13.5px; color: #71717a; line-height: 1.7; }
+.boot-err table { width: 100%; border-collapse: collapse; font-size: 12.5px; background: #fafafa; }
+.boot-err th { text-align: left; padding: 6px 10px; color: #71717a; font-weight: 600; }
+.boot-err td { padding: 5px 10px; border-top: 1px solid #f0f0f2; }
+.boot-err .boot-acts { margin-top: 16px; display: flex; gap: 10px; flex-wrap: wrap; }
+.boot-err button, .boot-err a {
+  padding: 9px 18px; border-radius: 10px; font-size: 13px; font-weight: 600;
+  cursor: pointer; text-decoration: none; display: inline-block;
+}
+.boot-err button { border: none; background: #09090b; color: #fff; }
+.boot-err a { border: 1px solid #e4e4e7; color: #18181b; }
+.boot-err .boot-tips { margin: 14px 0 0; font-size: 12px; color: #a1a1aa; line-height: 1.9; }
+</style>
+<link rel="stylesheet" href="style.css?v=148">
 </head>
 <body>
-<div id="app"><div class="boot-loading">加载中…</div></div>
+<div id="app"><div class="boot-loading">正在加载 FLA…</div></div>
 <div id="toast"></div>
-<script defer src="js/api.js?v=126"></script>
-<script defer src="js/ui.js?v=126"></script>
-<script defer src="js/app.js?v=126"></script>
-<script defer src="js/admin.js?v=126"></script>
-<script defer src="js/viewer.js?v=126"></script>
+<script>
+/* 启动看门狗: 12 秒未启动 → 显示实时加载进度面板 (不打断加载, 启动成功后自动消失) */
+(function () {
+  function booted() { var a = document.getElementById('app'); return a && a.dataset.booted === '1'; }
+  var box = null;
+  function render() {
+    if (booted()) { if (box) box.remove(); return; }
+    var st = window.__flaLoad, rows = '';
+    if (st) {
+      for (var k in st.files) {
+        var f = st.files[k];
+        rows += '<tr><td>' + k.split('/').pop().split('?')[0] + '</td><td>' + (f.done ? '完成' : '加载中' + (f.attempt ? ' (重试 ' + f.attempt + ')' : '')) +
+                '</td><td>' + Math.round(f.bytes / 1024) + ' KB</td></tr>';
+      }
+    }
+    if (!box) { box = document.createElement('div'); box.className = 'boot-err'; box.style.cssText = 'position:fixed;inset:auto 12px 12px 12px;max-width:560px;margin:auto;background:#fff;border:1px solid #ddd;border-radius:10px;padding:14px;box-shadow:0 6px 24px rgba(0,0,0,.15);z-index:99999;font:13px/1.5 sans-serif'; document.body.appendChild(box); }
+    box.innerHTML = '<b>网络较慢，仍在加载…</b> ' + (st ? st.done + '/' + st.total + ' 个文件，已自动重连 ' + st.retries + ' 次' : '') +
+      '<table style="width:100%;margin-top:6px">' + rows + '</table>' +
+      '<div style="margin-top:8px"><button onclick="location.reload()">重新加载</button> <a href="/diag.html">网络诊断</a></div>';
+    setTimeout(render, 1000);
+  }
+  setTimeout(render, 12000);
+})();
+</script>
+<script>
+/* 弹性加载器: 并行 fetch 所有脚本, 任一连接 8 秒无数据即中断重连 (跨境链路常见"单连接卡死"),
+   最多重试 5 次, 全部到齐后按顺序执行, 最后调用 initApp。不支持 fetch 的老浏览器退回普通 script 标签。 */
+(function () {
+  var LIST = ['js/api.js?v=136', 'js/ui.js?v=143', 'js/app.js?v=158',
+              'js/admin.js?v=137', 'js/chat.js?v=134', 'js/ai.js?v=140', 'js/remote.js?v=137',
+              'lib/interactjs/interact.min.js?v=1.10.28', 'js/msstage.js?v=139', 'js/viewer.js?v=135'];
+  var st = window.__flaLoad = { total: LIST.length, done: 0, retries: 0, files: {} };
+  function plain() {
+    LIST.forEach(function (u) { var s = document.createElement('script'); s.src = u; s.async = false; document.body.appendChild(s); });
+  }
+  if (!window.fetch || !window.AbortController || !window.Promise || !window.ReadableStream) { plain(); return; }
+  window.__flaDeferInit = true;
+  function get(url, attempt) {
+    var ctl = new AbortController(), timer, got = 0;
+    st.files[url] = { attempt: attempt, bytes: 0, done: false };
+    function arm() { clearTimeout(timer); timer = setTimeout(function () { ctl.abort(); }, 8000); }
+    arm();
+    var u = attempt ? url + '&r=' + attempt : url;
+    return fetch(u, { signal: ctl.signal, credentials: 'same-origin' }).then(function (resp) {
+      if (!resp.ok) throw new Error('HTTP ' + resp.status);
+      var reader = resp.body.getReader(), chunks = [];
+      function pump() {
+        return reader.read().then(function (r) {
+          if (r.done) return;
+          chunks.push(r.value); got += r.value.length; st.files[url].bytes = got; arm();
+          return pump();
+        });
+      }
+      return pump().then(function () {
+        clearTimeout(timer);
+        var buf = new Uint8Array(got), o = 0;
+        chunks.forEach(function (c) { buf.set(c, o); o += c.length; });
+        st.files[url].done = true; st.done++;
+        return new TextDecoder('utf-8').decode(buf);
+      });
+    }).catch(function (e) {
+      clearTimeout(timer);
+      if (attempt >= 5) throw e;
+      st.retries++;
+      return new Promise(function (r) { setTimeout(r, 500 * (attempt + 1)); }).then(function () { return get(url, attempt + 1); });
+    });
+  }
+  Promise.all(LIST.map(function (u) { return get(u, 0); })).then(function (texts) {
+    texts.forEach(function (t, i) {
+      var s = document.createElement('script');
+      s.text = t + '\n//# sourceURL=' + location.origin + '/' + LIST[i].split('?')[0];
+      document.body.appendChild(s);
+    });
+    function go() { if (typeof window.__flaInit === 'function') window.__flaInit(); }
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', go); else go();
+  }).catch(function () { window.__flaDeferInit = false; plain(); });
+})();
+</script>
+<div id="flaVer" style="position:fixed;left:0;right:0;bottom:calc(2px + env(safe-area-inset-bottom));text-align:center;font-size:10px;opacity:.4;pointer-events:none;z-index:9999;font-family:system-ui,sans-serif"></div>
+<script>fetch('/api/version').then(function(r){return r.json()}).then(function(d){document.getElementById('flaVer').textContent='FLA v'+d.version+(d.build?' · '+d.build:'')}).catch(function(){});</script>
 </body>
 </html>

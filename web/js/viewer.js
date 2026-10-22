@@ -56,6 +56,7 @@
     if (V._keyHandler) window.removeEventListener('keydown', V._keyHandler);
     if (V._gestureStop) document.removeEventListener('gesturestart', V._gestureStop);
     if (V._resizeHandler) window.removeEventListener('resize', V._resizeHandler);
+    if (V.msStage) { try { V.msStage.destroy(); } catch (e) { } V.msStage = null; }
     V = null;
   }
 
@@ -75,6 +76,7 @@
       officeMode: false, oo: null, ooHolder: null, ooPage: null, _loadedScripts: {},
       laserPts: [], laserActive: false, laserT: 0,
       textEdit: null, timerInt: null, timerEl: null, timerRun: false, timerEnd: 0, timerLeft: 0,
+      msStage: null,
     };
     loadCfg();
     screenMsg('<div class="spin"></div><p>正在加载课件…</p>');
@@ -119,56 +121,38 @@
     if (app) app.innerHTML = '<div class="v-msgscreen"><div class="v-msgbox">' + html + '</div></div>';
   }
 
-  /* ---------- v1.19 微软嵌入视图: Office 文档零静态渲染 ---------- */
+  /* ---------- 微软嵌入预览模式: 委托 MSStage，只删工具栏，保留顶栏返回/翻页/全屏等核心操作 ---------- */
   async function msViewer() {
     const app = document.getElementById('app');
-    let sl;
-    try { sl = await API.get('/api/files/' + V.id + '/share-link'); }
-    catch (e) { screenMsg('<p class="err-t">' + UI.esc(e.message) + '</p><button class="btn" onclick="location.hash=\'#/library\'">返回</button>'); return; }
-    const m = V.meta;
-    const isPpt = /^(ppt|pptx)$/.test(m.ext || '');
-    let ar = 1.77778;
-    if (isPpt) {
-      try { const a = await API.get('/api/files/' + V.id + '/anim'); if (a && a.slideW && a.slideH) ar = a.slideW / a.slideH; } catch (e) { }
+    if (!window.MSStage) {
+      await fallbackLocalViewer();
+      return;
     }
-    /* v1.20: PPT 用放映模式嵌入(动画可直接播放), 审阅模式无法播放动画 */
-    const msUrl = 'https://view.officeapps.live.com/op/embed.aspx?src=' +
-      encodeURIComponent(sl.direct) + (isPpt ? '&wdStartOn=1&wdPrint=0&wdEmbedCode=0&wdAr=' + ar : '');
-    document.title = (m.name || '课件') + ' - FLA';
-    const btnCss = 'background:#1c2027;color:#e5e7eb;border:1px solid #3a4150;border-radius:10px;' +
-      'padding:8px 14px;cursor:pointer;font:13px inherit;white-space:nowrap';
-    const warn = sl.ms_ok ? '' :
-      '<div style="margin-top:10px;color:#fbbf24;font-size:12px">⚠ 直链(' + UI.esc(sl.direct) + ')疑似不符合微软要求(需域名+80/443), 请管理员在后台设置公开访问地址</div>';
-    app.innerHTML =
-      '<div style="position:fixed;inset:0;display:flex;flex-direction:column;background:#101216">' +
-      '<div style="display:flex;align-items:center;gap:10px;padding:10px 14px;border-bottom:1px solid #2a2f3a;color:#e5e7eb;flex-wrap:wrap">' +
-      '<button id="msv-back" style="' + btnCss + '">‹ 返回</button>' +
-      '<b style="flex:1;min-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + UI.esc(m.name || '') + '</b>' +
-      '<span style="color:#9ca3af;font-size:12px">' + (m.pages ? m.pages + ' 页 · ' : '') + UI.fmtSize(m.size) + ' · 微软渲染</span>' +
-      '<button id="msv-present" style="' + btnCss + ';border-color:#e5e7eb">▶ 全屏放映</button>' +
-      '<button id="msv-dl" style="' + btnCss + '">⬇ 下载</button>' +
-      '<button id="msv-refresh" style="' + btnCss + '">⟳ 刷新</button>' +
-      '</div>' +
-      '<div style="flex:1;position:relative;background:#000">' +
-      '<iframe id="msv-frame" allowfullscreen="true" style="position:absolute;inset:0;width:100%;height:100%;border:0"></iframe>' +
-      '<div id="msv-load" style="position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);text-align:center;color:#e5e7eb;font:14px/1.9 inherit;background:rgba(0,0,0,.82);padding:20px 30px;border-radius:14px;max-width:84%">' +
-      '微软服务器正在抓取课件（首次约 30–60 秒）…<br>' +
-      '<span style="font-size:12px;color:#9ca3af">加载完成后可翻页浏览；板书与放映请点右上「全屏放映」（放映内右侧工具栏拿笔）</span>' + warn +
-      '</div></div></div>';
-    const fr = document.getElementById('msv-frame');
-    fr.src = msUrl;
-    fr.onload = () => setTimeout(() => { const l = document.getElementById('msv-load'); if (l) l.style.display = 'none'; }, 4000);
-    setTimeout(() => { const l = document.getElementById('msv-load'); if (l) l.style.display = 'none'; }, 90000);
-    document.getElementById('msv-back').onclick = () => location.hash = '#/library';
-    document.getElementById('msv-present').onclick = openPresent;
-    document.getElementById('msv-dl').onclick = () =>
-      window.open('/api/files/' + V.id + '/download?token=' + API.token, '_blank');
-    document.getElementById('msv-refresh').onclick = () => {
-      const l = document.getElementById('msv-load');
-      if (l) l.style.display = '';
-      fr.src = msUrl + '&r=' + Date.now();
-    };
+    app.innerHTML = '';
+    try {
+      V.msStage = await window.MSStage.mount({
+        fid: V.id, token: API.token, meta: V.meta, mode: 'view', mount: app,
+        onExit: () => { location.hash = '#/library'; },
+      });
+      if (window.App && App.setCleanup) App.setCleanup(() => destroy());
+    } catch (e) {
+      console.warn('微软在线预览挂载失败，自动降级至本地原生引擎:', e);
+      await fallbackLocalViewer();
+    }
   }
+
+  async function fallbackLocalViewer() {
+    try {
+      await initDoc();
+      if (V.destroyed || !V) return;
+      buildUI();
+      await showPage(0);
+    } catch (err) {
+      screenMsg('<p class="err-t">' + UI.esc(err.message || '课件预览加载失败') + '</p>' +
+        '<button class="btn" onclick="location.hash=\'#/library\'">返回课件库</button>');
+    }
+  }
+
 
   function failedScreen() {
     const err = V.meta.error || '转换失败';
@@ -1071,8 +1055,11 @@
       }
       return false;
     }
-    for (const pt of s.pts) {
-      if (segDist(pt, [a.x, a.y], [b.x, b.y]) <= r + half) return true;
+    if (s.pts && s.pts.length) {
+      if (s.pts.length === 1) return segDist(s.pts[0], [a.x, a.y], [b.x, b.y]) <= r + half;
+      for (let j = 0; j < s.pts.length - 1; j++) {
+        if (segsegDist([a.x, a.y], [b.x, b.y], s.pts[j], s.pts[j + 1]) <= r + half) return true;
+      }
     }
     return false;
   }
@@ -1777,7 +1764,7 @@
       '<div class="pop-row"><span class="pop-lb">粗细</span>' +
       '<input type="range" min="' + (t === 'pen' ? 1 : 6) + '" max="' + (t === 'pen' ? 14 : 40) + '" step="1" value="' + cfg.width + '" id="popw">' +
       '<b class="pop-val" id="popwv">' + cfg.width + '</b></div>' +
-      '<div class="pop-preview"><svg height="34" width="220"><line id="prevline" x1="10" y1="17" x2="210" y2="17" stroke="' + cfg.color + '" stroke-width="' + cfg.width + '" stroke-linecap="round"' + (t === 'marker' ? ' opacity=".42"' : '') + '/></svg></div>';
+      '<div class="pop-preview"><svg height="48" width="220"><line id="prevline" x1="10" y1="24" x2="210" y2="24" stroke="' + cfg.color + '" stroke-width="' + cfg.width + '" stroke-linecap="round"' + (t === 'marker' ? ' opacity=".42"' : '') + '/></svg></div>';
     pop.querySelectorAll('.swatch[data-c]').forEach(b => b.onclick = () => {
       cfg.color = b.dataset.c;
       pop.querySelectorAll('.swatch').forEach(x => x.classList.remove('on'));
@@ -1938,12 +1925,26 @@
   function loadCfg() {
     try {
       const s = storeGet('fla_cfg');
-      if (!s) return;
-      const c = JSON.parse(s);
-      ['pen', 'marker', 'eraser', 'shape', 'text'].forEach(k => {
-        if (c[k]) Object.assign(V.cfg[k], c[k]);
-      });
+      if (s) {
+        const c = JSON.parse(s);
+        ['pen', 'marker', 'eraser', 'shape', 'text'].forEach(k => {
+          if (c && c[k] && typeof c[k] === 'object') Object.assign(V.cfg[k], c[k]);
+        });
+      }
     } catch (e) { }
+    const width = (value, fallback, min, max) => {
+      const n = Number(value);
+      return Math.round(clamp(Number.isFinite(n) ? n : fallback, min, max));
+    };
+    V.cfg.pen.width = width(V.cfg.pen.width, DEFAULT_CFG.pen.width, 1, 14);
+    V.cfg.marker.width = width(V.cfg.marker.width, DEFAULT_CFG.marker.width, 6, 40);
+    V.cfg.shape.width = width(V.cfg.shape.width, DEFAULT_CFG.shape.width, 1, 12);
+    V.cfg.text.size = width(V.cfg.text.size, DEFAULT_CFG.text.size, 12, 72);
+    V.cfg.eraser.width = width(V.cfg.eraser.width, DEFAULT_CFG.eraser.width, 6, 120);
+    ['pen', 'marker', 'shape', 'text'].forEach(k => {
+      if (!/^#[0-9a-f]{6}$/i.test(String(V.cfg[k].color || ''))) V.cfg[k].color = DEFAULT_CFG[k].color;
+    });
+    if (!['object', 'pixel'].includes(V.cfg.eraser.mode)) V.cfg.eraser.mode = DEFAULT_CFG.eraser.mode;
   }
 
   function saveCfg() {

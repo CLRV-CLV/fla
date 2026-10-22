@@ -106,9 +106,9 @@
     ]).then(function (rs) {
       S.meta = rs[0];
       if (S.meta.status && S.meta.status !== 'ready') return fail('文档尚未转换完成, 请稍后再试');
-      if (TRACK === 'ms' && S.meta.kind === 'office' &&
+      if (TRACK !== 'local' && S.meta.kind === 'office' &&
           /^(ppt|pptx|doc|docx|xls|xlsx)$/.test(S.meta.ext || '')) {
-        return msTrack();  // v1.18 微软放映轨道(透明伴飞层)
+        return msTrack();  // 默认使用微软官方高保真在线放映引擎(带板书画笔与互动工具)
       }
       S.manifest = rs[2] && rs[2].pages && rs[2].v >= 2 && rs[2].pages.length ? rs[2] : null;
       var ann = rs[1];
@@ -147,822 +147,71 @@
    * 底部不透明工具栏(白板同款)整条遮住微软控件; 仅 ◀/▶ 两窗透明可穿透;
    * 工具: 选择/笔/荧光笔/几何图形/文本/激光笔/橡皮 + 撤销/重做/清空;
    * 页码: 视觉同步(需 HTTPS) 或 手动; 触摸: touch-action + 指针捕获 */
-  function msTrack() {
-    S.msMode = true;   /* v1.25: 标记微软轨道 — boot() 不再构建原生 UI(修: 原生 onKey 泄漏, Esc 会 window.close() 关掉整个放映页) */
-    var isPpt = /^(ppt|pptx)$/.test(S.meta.ext || '');
-    var totPages = S.meta.pages || 1;
-    var arJob = jget('/api/files/' + FID + '/anim').then(function (m) {
-      return (m && m.slideW && m.slideH) ? (m.slideW / m.slideH) : 1.77778;
-    }).catch(function () { return 1.77778; });
-    Promise.all([jget('/api/files/' + FID + '/share-link'), arJob,
-      jget('/api/files/' + FID + '/annotations').catch(function () { return null; })]).then(function (rs) {
-      var sl = rs[0], ar = rs[1];
-      var msUrl = 'https://view.officeapps.live.com/op/embed.aspx?src=' + encodeURIComponent(sl.direct);
-      if (isPpt) msUrl += '&wdStartOn=1&wdPrint=0&wdEmbedCode=0&wdAr=' + ar;
-      document.title = (S.meta.name || '课件') + ' - FLA 放映';
-      document.body.innerHTML = '';
-      document.body.style.cssText = 'margin:0;overflow:hidden;background:#000';
-
-      S.msPage = 1;
-      S.pages = [];
-      for (var i = 0; i < totPages; i++) S.pages.push({ t: 'ms', n: i, pid: 'm' + i, bg: 'w' });
-      S.cur = 0;
-      /* v1.23: 载入历史批注(否则重开会用空栈覆盖丢失旧板书) + 板中板页数 */
-      if (rs[2] && rs[2].strokes) S.strokes = rs[2].strokes;
-      if (rs[2] && rs[2].bb && rs[2].bb.n) S.bbN = rs[2].bb.n;
-      if (rs[2] && rs[2].pages && rs[2].pages.length > totPages) {
-        /* 恢复放映中加的板书页 */
-        S.pages = rs[2].pages.slice(0, rs[2].pages.length);
-        totPages = S.pages.length;
+  /* ---------- v1.27 微软放映轨道 → 委托给 MSStage (web/js/msstage.js) ----------
+   * 老大难修复: 微软 Office 在线视图是【跨域 iframe】, 父页面既读不到它当前在
+   * 第几页, 也没法命令它翻页 → 以前板书画布永远停在第一页, 与画面脱节。
+   * MSStage 改由【我方】掌握页码: 翻页 = 换 iframe.src 的定位参数
+   * (wdStartOn / wdSlideId), 双 iframe 乒乓 + 预载下一页, 交叉淡入不闪黑屏;
+   * 画布坐标绑定幻灯区域(按真实宽高比 letterbox, 可手动微调并保存到服务器)。
+   * 同步模式: deep 我方驱动 / follow 微软自翻(板书用 ‹ › 对齐), 顶栏可切。 */
+  function fallbackLocalPresent() {
+    S.msMode = false;
+    document.body.innerHTML = '<div id="pboot">正在加载本地高保真放映引擎…</div>';
+    document.body.style.cssText = 'margin:0;background:#15181d;color:#fff;overflow:hidden;';
+    return openPdf().then(function (numPages) {
+      if (!S.pages.length || (S.pages.every(function (q) { return q.t === 'pdf'; }) && S.pages.length !== numPages)) {
+        S.pages = [];
+        for (var i = 0; i < numPages; i++) S.pages.push({ t: 'pdf', n: i, pid: 'p' + i });
       }
-      function msPid() { return 'm' + (S.msPage - 1); }
-
-      var wrap = el('div', '', 'position:fixed;left:0;top:0;right:0;bottom:0;background:#000');
-      var fr = el('iframe', '', 'position:absolute;left:0;top:0;width:100%;height:100%;border:0;background:#000;z-index:1');
-      fr.setAttribute('allowfullscreen', 'true');
-      fr.src = msUrl;
-      wrap.appendChild(fr);
-
-      /* ---------- 图标(与白板 ui.js 同源) ---------- */
-      function icon(name, sz) {
-        var P = {
-          cursor: '<path d="M3 3l7.07 16.97 2.51-7.39 7.39-2.51L3 3z"/>',
-          select: '<circle cx="11" cy="11" r="7.5" stroke-dasharray="3.2 3.2"/><path d="M15.8 15.8 21 21l-1.8.6.6-1.8z" fill="currentColor" stroke="none"/>',
-          pen: '<path d="M17 3a2.85 2.85 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/>',
-          marker: '<path d="m9 11-6 6v3h9l3-3"/><path d="m22 12-4.6 4.6a2 2 0 0 1-2.8 0l-5.2-5.2a2 2 0 0 1 0-2.8L14 4l8 8Z"/>',
-          shapes: '<rect x="3" y="3" width="8.5" height="8.5" rx="1.5"/><circle cx="16.5" cy="16.5" r="5"/>',
-          text: '<path d="M5 7V5h14v2"/><path d="M12 5v14"/><path d="M9 19h6"/>',
-          laser: '<circle cx="12" cy="12" r="2.6" fill="currentColor" stroke="none"/><path d="M12 3.5v2.6M12 17.9v2.6M3.5 12h2.6M17.9 12h2.6M5.9 5.9l1.9 1.9M16.2 16.2l1.9 1.9M18.1 5.9l-1.9 1.9M7.8 16.2l-1.9 1.9"/>',
-          eraser: '<path d="m7 21-4.3-4.3c-1-1-1-2.5 0-3.4l9.6-9.6c1-1 2.5-1 3.4 0l5.6 5.6c1 1 1 2.5 0 3.4L13 21"/><path d="M22 21H7"/><path d="m5 11 9 9"/>',
-          undo: '<path d="M9 14 4 9l5-5"/><path d="M4 9h10.5a5.5 5.5 0 0 1 0 11H11"/>',
-          redo: '<path d="m15 14 5-5-5-5"/><path d="M20 9H9.5a5.5 5.5 0 0 0 0 11H13"/>',
-          trash: '<path d="M3 6h18"/><path d="M19 6v14a2 2 0 0 1-2 2H7a2 2 0 0 1-2-2V6"/><path d="M8 6V4a2 2 0 0 1 2-2h4a2 2 0 0 1 2 2v2"/><path d="M10 11v6M14 11v6"/>',
-          full: '<path d="M8 3H5a2 2 0 0 0-2 2v3"/><path d="M21 8V5a2 2 0 0 0-2-2h-3"/><path d="M3 16v3a2 2 0 0 0 2 2h3"/><path d="MM16 21h3a2 2 0 0 0 2-2v-3"/>',
-          board: '<rect x="2.5" y="4" width="19" height="13" rx="2"/><path d="M12 17v3M8 21h8"/>',
-          plusPage: '<path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><path d="M14 2v6h6"/><path d="M12 11v6M9 14h6"/>',
-          bolt: '<path d="M13 2 3 14h7l-1 8 10-12h-7l1-8z"/>',
-          square: '<rect x="4.5" y="4.5" width="15" height="15" rx="2"/>',
-          chevL: '<path d="m15 18-6-6 6-6"/>',
-          chevR: '<path d="m9 18 6-6-6-6"/>'
-        };
-        return '<svg width="' + (sz || 20) + '" height="' + (sz || 20) + '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">' + (P[name] || '') + '</svg>';
-      }
-
-      /* ---------- 配置(与白板一致) ---------- */
-      var PEN_COLORS = ['#1f2937', '#ef4444', '#2563eb', '#059669', '#f59e0b', '#ffffff'];
-      var MARKER_COLORS = ['#fde047', '#86efac', '#93c5fd', '#f9a8d4', '#fdba74'];
-      var SHAPE_COLORS = ['#111827', '#ef4444', '#2563eb', '#059669', '#9333ea', '#ffffff'];
-      var TEXT_COLORS = ['#1f2937', '#ef4444', '#2563eb', '#059669', '#f59e0b', '#ffffff'];
-      var SHAPE_LIST = [['line', '直线'], ['arrow', '箭头'], ['rect', '矩形'], ['ellipse', '椭圆'], ['triangle', '三角形']];
-      var SHAPE_MINI = {
-        line: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 19L19 5"/></svg>',
-        arrow: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 19L19 5"/><path d="M13 5h6v6"/></svg>',
-        rect: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><rect x="4" y="6" width="16" height="12" rx="1"/></svg>',
-        ellipse: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><ellipse cx="12" cy="12" rx="9" ry="7"/></svg>',
-        triangle: '<svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 4l9 16H3z"/></svg>'
-      };
-      var cfg = {
-        pen: { color: '#ef4444', width: 4 },
-        marker: { color: '#fde047', width: 16 },
-        shape: { type: 'rect', color: '#ef4444', width: 3 },
-        text: { color: '#ef4444', size: 28 }
-      };
-
-      /* ---------- 墨迹画布 ---------- */
-      var ink = el('canvas', '', 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;touch-action:none;z-index:5');
-      wrap.appendChild(ink);
-      var ictx = ink.getContext('2d');
-      var tool = 'cursor';
-      var drawing = null;
-      var laserDots = [];
-      var selId = null, selOff = null;
-
-      function canvasSize() {
-        S.dpr = window.devicePixelRatio || 1;
-        ink.width = Math.round(window.innerWidth * S.dpr);
-        ink.height = Math.round(window.innerHeight * S.dpr);
-        inkRedrawMs();
-      }
-      function toVirt(x, y) { return [x / window.innerWidth * 1280, y / window.innerHeight * 720]; }
-      function uid() { return 's' + Date.now().toString(36) + Math.random().toString(36).slice(2, 6); }
-
-      /* 撤销/重做: 每页操作栈 */
-      var ops = {};   /* pid -> [{op:'add'|'del'|'move'|'clear', ...}] */
-      var redos = {};
-      function opPush(pid, o) {
-        (ops[pid] = ops[pid] || []).push(o);
-        if (ops[pid].length > 200) ops[pid].shift();
-        redos[pid] = [];
-        saveSoon();
-      }
-      function opApply(pid, o, undo) {
-        var arr = S.strokes[pid] || [];
-        if (o.op === 'add') {
-          if (undo) { var i = arr.indexOf(o.s); if (i >= 0) arr.splice(i, 1); }
-          else arr.push(o.s);
-        } else if (o.op === 'del') {
-          if (undo) arr.push(o.s);
-          else { var j = arr.indexOf(o.s); if (j >= 0) arr.splice(j, 1); }
-        } else if (o.op === 'move') {
-          var s = o.s, before = undo ? o.after : o.before, after2 = undo ? o.before : o.after;
-          if (s.tool === 'shape') { s.pts = after2; }
-          else if (s.tool === 'text') { s.pts = [after2]; }
-          else { s.pts.forEach(function (pt, k) { pt[0] = before[k][0] + (after2[0][0] - before[0][0]); pt[1] = before[k][1] + (after2[0][1] - before[0][1]); }); }
-        } else if (o.op === 'clear') {
-          if (undo) { o.list.forEach(function (x) { arr.push(x); }); }
-          else { o.list.forEach(function (x) { var k = arr.indexOf(x); if (k >= 0) arr.splice(k, 1); }); }
-        }
-        S.strokes[pid] = arr;
-      }
-      function doUndoMs() {
-        var pid = msPid(), st = ops[pid] || [];
-        if (!st.length) return;
-        var o = st.pop();
-        opApply(pid, o, true);
-        (redos[pid] = redos[pid] || []).push(o);
-        if (selId && (o.op === 'del' || o.op === 'clear')) selId = null;
-        inkRedrawMs(); saveSoon();
-      }
-      function doRedoMs() {
-        var pid = msPid(), st = redos[pid] || [];
-        if (!st.length) return;
-        var o = st.pop();
-        opApply(pid, o, false);
-        (ops[pid] = ops[pid] || []).push(o);
-        inkRedrawMs(); saveSoon();
-      }
-
-      /* 形状渲染(吸附 0/45/90) */
-      function snap45(a, b) {
-        var dx = b[0] - a[0], dy = b[1] - a[1];
-        var ang = Math.atan2(dy, dx), d = Math.sqrt(dx * dx + dy * dy);
-        var s = Math.round(ang / (Math.PI / 4)) * (Math.PI / 4);
-        return [a[0] + Math.cos(s) * d, a[1] + Math.sin(s) * d];
-      }
-      function renderShape(ctx, s) {
-        var a = s.pts[0], b = s.pts[1] || s.pts[0];
-        if (s.shape === 'line' || s.shape === 'arrow') b = snap45(a, b);
-        ctx.strokeStyle = s.color; ctx.lineWidth = s.width; ctx.lineCap = 'round'; ctx.lineJoin = 'round';
-        ctx.beginPath();
-        if (s.shape === 'line' || s.shape === 'arrow') {
-          ctx.moveTo(a[0], a[1]); ctx.lineTo(b[0], b[1]);
-          if (s.shape === 'arrow') {
-            var ang = Math.atan2(b[1] - a[1], b[0] - a[0]), hl = Math.max(10, s.width * 3.5);
-            ctx.moveTo(b[0], b[1]);
-            ctx.lineTo(b[0] - hl * Math.cos(ang - 0.45), b[1] - hl * Math.sin(ang - 0.45));
-            ctx.moveTo(b[0], b[1]);
-            ctx.lineTo(b[0] - hl * Math.cos(ang + 0.45), b[1] - hl * Math.sin(ang + 0.45));
-          }
-        } else if (s.shape === 'rect') {
-          ctx.rect(Math.min(a[0], b[0]), Math.min(a[1], b[1]), Math.abs(b[0] - a[0]), Math.abs(b[1] - a[1]));
-        } else if (s.shape === 'ellipse') {
-          ctx.ellipse((a[0] + b[0]) / 2, (a[1] + b[1]) / 2, Math.abs(b[0] - a[0]) / 2, Math.abs(b[1] - a[1]) / 2, 0, 0, Math.PI * 2);
-        } else if (s.shape === 'triangle') {
-          ctx.moveTo((a[0] + b[0]) / 2, Math.min(a[1], b[1]));
-          ctx.lineTo(Math.max(a[0], b[0]), Math.max(a[1], b[1]));
-          ctx.lineTo(Math.min(a[0], b[0]), Math.max(a[1], b[1]));
-          ctx.closePath();
-        }
-        ctx.stroke();
-      }
-      function strokeBBox(s) {
-        var xs = [], ys = [];
-        if (s.tool === 'text') {
-          var w = (s.text || '').length * s.width * 0.62, h = s.width * 1.35;
-          xs = [s.pts[0][0], s.pts[0][0] + w]; ys = [s.pts[0][1], s.pts[0][1] + h];
-        } else if (s.tool === 'shape') {
-          xs = [s.pts[0][0], s.pts[1][0]]; ys = [s.pts[0][1], s.pts[1][1]];
-        } else {
-          (s.pts || []).forEach(function (p) { xs.push(p[0]); ys.push(p[1]); });
-        }
-        return { x0: Math.min.apply(null, xs), y0: Math.min.apply(null, ys), x1: Math.max.apply(null, xs), y1: Math.max.apply(null, ys) };
-      }
-      function inkRedrawMs(preview) {
-        ictx.setTransform(1, 0, 0, 1, 0, 0);
-        ictx.clearRect(0, 0, ink.width, ink.height);
-        ictx.save();
-        ictx.scale(ink.width / 1280, ink.height / 720);
-        (S.strokes[msPid()] || []).forEach(function (st) {
-          ictx.save();
-          if (st.tool === 'shape') renderShape(ictx, st);
-          else drawStroke(ictx, st);
-          ictx.restore();
-          if (selId && st.id === selId) {
-            var b = strokeBBox(st), pad = 8;
-            ictx.save();
-            ictx.strokeStyle = '#3b82f6'; ictx.lineWidth = 1.5; ictx.setLineDash([7, 5]);
-            ictx.strokeRect(b.x0 - pad, b.y0 - pad, b.x1 - b.x0 + pad * 2, b.y1 - b.y0 + pad * 2);
-            ictx.restore();
-          }
-        });
-        if (preview) { ictx.save(); if (preview.tool === 'shape') renderShape(ictx, preview); else drawStroke(ictx, preview); ictx.restore(); }
-        ictx.restore();
-      }
-      function clearInkMs() {
-        var pid = msPid(), arr = S.strokes[pid] || [];
-        if (!arr.length) return;
-        opPush(pid, { op: 'clear', list: arr.slice() });
-        S.strokes[pid] = [];
-        selId = null;
-        inkRedrawMs(); saveSoon();
-      }
-      function eraseAt(vx, vy) {
-        var pid = msPid(), arr = S.strokes[pid] || [];
-        for (var i = arr.length - 1; i >= 0; i--) {
-          var st = arr[i], hit = false;
-          if (st.tool === 'shape' || st.tool === 'text') {
-            var b = strokeBBox(st);
-            hit = vx >= b.x0 - 10 && vx <= b.x1 + 10 && vy >= b.y0 - 10 && vy <= b.y1 + 10;
-          } else {
-            hit = (st.pts || []).some(function (pt) { return Math.abs(pt[0] - vx) < 12 + st.width / 2 && Math.abs(pt[1] - vy) < 12 + st.width / 2; });
-          }
-          if (hit) {
-            arr.splice(i, 1);
-            opPush(pid, { op: 'del', s: st });
-            if (selId === st.id) selId = null;
-            inkRedrawMs();
-            return;
-          }
-        }
-      }
-      function pickAt(vx, vy) {
-        var arr = S.strokes[msPid()] || [];
-        for (var i = arr.length - 1; i >= 0; i--) {
-          var st = arr[i], b = strokeBBox(st), pad = st.tool === 'shape' || st.tool === 'text' ? 10 : 12 + (st.width || 3) / 2;
-          var inside = vx >= b.x0 - pad && vx <= b.x1 + pad && vy >= b.y0 - pad && vy <= b.y1 + pad;
-          if (inside) return st;
-        }
-        return null;
-      }
-
-      /* 激光笔 */
-      var laserOn = false;
-      var laserCv = el('canvas', '', 'position:absolute;left:0;top:0;width:100%;height:100%;pointer-events:none;z-index:6');
-      wrap.appendChild(laserCv);
-      function laserResize() {
-        laserCv.width = Math.round(window.innerWidth * S.dpr);
-        laserCv.height = Math.round(window.innerHeight * S.dpr);
-      }
-      function laserLoop() {
-        if (!laserOn) return;
-        requestAnimationFrame(laserLoop);
-        var ctx = laserCv.getContext('2d');
-        ctx.setTransform(1, 0, 0, 1, 0, 0);
-        ctx.clearRect(0, 0, laserCv.width, laserCv.height);
-        var now = Date.now();
-        laserDots = laserDots.filter(function (d) { return now - d.t < 650; });
-        for (var k = 0; k < laserDots.length; k++) {
-          var d = laserDots[k], age = (now - d.t) / 650;
-          ctx.beginPath();
-          ctx.fillStyle = 'rgba(239,68,68,' + (1 - age * .8) + ')';
-          ctx.arc(d.x / 1280 * laserCv.width, d.y / 720 * laserCv.height, (7 - age * 4) * (laserCv.width / 1280), 0, Math.PI * 2);
-          ctx.fill();
-        }
-      }
-
-      /* ---------- 输入 ---------- */
-      var textInput = null; /* {ta, vxy} */
-      function commitText() {
-        if (!textInput) return;
-        var txt = textInput.ta.value.trim();
-        var v = textInput.vxy;
-        textInput.ta.remove();
-        textInput = null;
-        if (txt) {
-          var st = { id: uid(), tool: 'text', color: cfg.text.color, width: cfg.text.size, pts: [v], text: txt };
-          (S.strokes[msPid()] = S.strokes[msPid()] || []).push(st);
-          opPush(msPid(), { op: 'add', s: st });
-          inkRedrawMs();
-        }
-      }
-      ink.addEventListener('pointerdown', function (e) {
-        if (tool === 'cursor') return;
-        e.preventDefault();
-        try { ink.setPointerCapture(e.pointerId); } catch (err) { }
-        var v = toVirt(e.clientX, e.clientY);
-        if (tool === 'laser') { laserDots.push({ x: v[0], y: v[1], t: Date.now() }); return; }
-        if (tool === 'eraser') { eraseAt(v[0], v[1]); return; }
-        if (tool === 'text') {
-          commitText();
-          var ta = el('textarea', '', 'position:absolute;z-index:30;background:rgba(255,255,255,.96);color:#111;border:2px solid #3b82f6;border-radius:8px;padding:6px 10px;outline:none;resize:none;overflow:hidden;line-height:1.3;min-width:80px');
-          var sc = window.innerWidth / 1280;
-          ta.style.left = (e.clientX) + 'px'; ta.style.top = (e.clientY) + 'px';
-          ta.style.font = (cfg.text.size * sc) + 'px ' + FONT_STACK;
-          ta.rows = 1;
-          wrap.appendChild(ta);
-          setTimeout(function () { ta.focus(); }, 30);
-          textInput = { ta: ta, vxy: v };
-          ta.addEventListener('input', function () { ta.rows = Math.max(1, ta.value.split('\n').length); });
-          ta.addEventListener('keydown', function (ev) {
-            if (ev.key === 'Enter' && !ev.shiftKey) { ev.preventDefault(); commitText(); }
-            else if (ev.key === 'Escape') { textInput.ta.remove(); textInput = null; }
-            ev.stopPropagation();
-          });
-          return;
-        }
-        if (tool === 'select') {
-          var st = pickAt(v[0], v[1]);
-          selId = st ? st.id : null;
-          if (st) selOff = { st: st, start: v, before: (st.tool === 'text') ? st.pts[0].slice() : (st.tool === 'shape' ? st.pts.map(function (p) { return p.slice(); }) : st.pts.map(function (p) { return p.slice(); })) };
-          inkRedrawMs();
-          return;
-        }
-        if (tool === 'shape') {
-          drawing = { id: uid(), tool: 'shape', shape: cfg.shape.type, color: cfg.shape.color, width: cfg.shape.width, pts: [v, v] };
-          return;
-        }
-        drawing = { id: uid(), tool: tool, color: tool === 'pen' ? cfg.pen.color : cfg.marker.color,
-          width: tool === 'pen' ? cfg.pen.width : cfg.marker.width, pts: [v] };
-        S.strokes[msPid()] = S.strokes[msPid()] || [];
-        S.strokes[msPid()].push(drawing);
-        opPush(msPid(), { op: 'add', s: drawing });
-        inkRedrawMs();
-      });
-      ink.addEventListener('pointermove', function (e) {
-        if (tool === 'cursor') return;
-        var v = toVirt(e.clientX, e.clientY);
-        if (tool === 'laser') { laserDots.push({ x: v[0], y: v[1], t: Date.now() }); return; }
-        if (tool === 'eraser') { if (e.buttons || e.pointerType === 'touch') eraseAt(v[0], v[1]); return; }
-        if (tool === 'select' && selOff && e.buttons) {
-          var st = selOff.st, dx = v[0] - selOff.start[0], dy = v[1] - selOff.start[1];
-          if (st.tool === 'text') { st.pts[0] = [selOff.before[0] + dx, selOff.before[1] + dy]; }
-          else { st.pts = selOff.before.map(function (p) { return [p[0] + dx, p[1] + dy]; }); }
-          inkRedrawMs();
-          return;
-        }
-        if (!drawing) return;
-        if (drawing.tool === 'shape') { drawing.pts[1] = v; inkRedrawMs(drawing); return; }
-        drawing.pts.push(v);
-        inkRedrawMs();
-      });
-      function endStroke() {
-        if (drawing) {
-          if (drawing.tool === 'shape') {
-            if (Math.abs(drawing.pts[1][0] - drawing.pts[0][0]) + Math.abs(drawing.pts[1][1] - drawing.pts[0][1]) > 12) {
-              (S.strokes[msPid()] = S.strokes[msPid()] || []).push(drawing);
-              opPush(msPid(), { op: 'add', s: drawing });
-            }
-            inkRedrawMs();
-          }
-          drawing = null; saveSoon();
-        }
-        if (selOff) {
-          var st = selOff.st;
-          var after = (st.tool === 'text') ? st.pts[0].slice() : st.pts.map(function (p) { return p.slice(); });
-          if (JSON.stringify(after) !== JSON.stringify(selOff.before)) {
-            opPush(msPid(), { op: 'move', s: st, before: selOff.before, after: after });
-          }
-          selOff = null;
-        }
-      }
-      ink.addEventListener('pointerup', endStroke);
-      ink.addEventListener('pointercancel', endStroke);
-
-      /* ---------- 顶栏(精简) ---------- */
-      var top = el('div', '', 'position:absolute;top:14px;left:50%;transform:translateX(-50%);display:flex;align-items:center;gap:4px;z-index:20;background:rgba(12,12,14,.82);border:1px solid rgba(255,255,255,.14);border-radius:999px;padding:6px 14px;color:rgba(255,255,255,.9);font:13px/1 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;box-shadow:0 6px 24px rgba(0,0,0,.4);backdrop-filter:blur(6px);user-select:none;white-space:nowrap');
-      function tspan(id, title, html) {
-        var sp = el('span', '', 'cursor:pointer;padding:4px 9px;border-radius:6px;display:inline-grid;place-items:center');
-        sp.id = id; sp.title = title; sp.innerHTML = html;
-        top.appendChild(sp); return sp;
-      }
-      var bExit = tspan('ms-x', '退出放映 (Esc)', '✕');
-      bExit.onclick = function () { try { window.close(); } catch (err) { } exitHint.style.display = ''; };
-      var bPg = tspan('mspg', '板书页码', '1 / ' + totPages);
-      bPg.style.minWidth = '58px'; bPg.style.textAlign = 'center'; bPg.style.fontVariantNumeric = 'tabular-nums';
-      var bDot = tspan('msdot', '微软渲染', '●');
-      bDot.style.color = '#4ade80'; bDot.style.cursor = 'default';
-      top.appendChild(el('span', '', 'width:1px;height:14px;background:rgba(255,255,255,.2)'));
-      var bTime = tspan('mstime', '点击重置计时', '00:00');
-      bTime.style.fontVariantNumeric = 'tabular-nums';
-      bTime.onclick = function () { S.t0 = Date.now(); };
-      top.appendChild(el('span', '', 'width:1px;height:14px;background:rgba(255,255,255,.2)'));
-      var bFull = tspan('ms-full', '全屏 (F)', icon('full', 16));
-      bFull.onclick = function () {
-        if (document.fullscreenElement) document.exitFullscreen();
-        else document.documentElement.requestFullscreen().catch(function () { });
-      };
-      var hideTop = 0;
-      function wakeTop() {
-        top.style.opacity = '1';
-        clearTimeout(hideTop);
-        hideTop = setTimeout(function () { top.style.opacity = '0'; }, 4000);
-      }
-      wrap.addEventListener('mousemove', wakeTop);
-      wakeTop();
-      wrap.appendChild(top);
-
-      /* ---------- 悬浮提示 (v1.25: 补上 toastMs 定义, 修复 v1.23 起 4 处 ReferenceError) ---------- */
-      var msToastWrap = el('div', '', 'position:absolute;left:50%;top:62px;transform:translateX(-50%);z-index:52;display:flex;flex-direction:column;align-items:center;gap:6px;pointer-events:none;width:100%');
-      wrap.appendChild(msToastWrap);
-      function toastMs(msg, dur) {
-        var t = el('div', '', 'background:rgba(17,20,26,.94);border:1px solid rgba(255,255,255,.14);color:#e5e7eb;font:13px/1.5 ' + FONT_STACK + ';padding:9px 16px;border-radius:12px;box-shadow:0 10px 30px rgba(0,0,0,.45);opacity:0;transform:translateY(-8px);transition:opacity .3s cubic-bezier(.22,1,.36,1),transform .3s cubic-bezier(.22,1,.36,1);max-width:80vw;text-align:center');
-        t.textContent = msg;
-        msToastWrap.appendChild(t);
-        setTimeout(function () { t.style.opacity = '1'; t.style.transform = 'translateY(0)'; }, 16);
-        setTimeout(function () {
-          t.style.opacity = '0'; t.style.transform = 'translateY(-8px)';
-          setTimeout(function () { t.remove(); }, 340);
-        }, dur || 2600);
-      }
-
-      /* ---------- 工具栏: 左右两侧竖排(底部完全留给微软, 任意分辨率不遮挡) ----------
-         微软自己的 ‹ › 翻页键和页码在屏幕底部中央, 直接点它翻 PPT;
-         左栏 ‹ ＋ › 只翻我们的板书页(和 PPT 页数无关) */
-      function pill(idName, side) {
-        var p = el('nav', '', 'position:absolute;top:50%;transform:translateY(-50%);z-index:30;display:flex;flex-direction:column;align-items:center;gap:3px;padding:10px 8px;background:rgba(255,255,255,.94);backdrop-filter:blur(22px) saturate(1.5);-webkit-backdrop-filter:blur(22px) saturate(1.5);border:1px solid rgba(15,18,24,.10);border-radius:20px;box-shadow:0 6px 18px rgba(11,12,15,.14),0 18px 50px rgba(11,12,15,.20);animation:flaSide .55s cubic-bezier(.22,1,.36,1) both');
-        p.id = idName;
-        if (side === 'l') p.style.left = '14px'; else p.style.right = '14px';
-        wrap.appendChild(p); return p;
-      }
-      function vbtn(group, id, title, html) {
-        var b = el('button', '', 'color:#5a6270');
-        b.className = 'vbtn';
-        b.id = id; b.title = title; b.innerHTML = html;
-        return b;
-      }
-      function sep() { var i = el('i', '', 'width:24px;height:1px;background:rgba(15,18,24,.12);margin:5px 0;flex-shrink:0'); return i; }
-      /* 左栏: 光标(正常模式·点击画面翻PPT) + 七工具 + 撤销/重做 + 板书页 ‹ ＋ › */
-      var barL = pill('msbar-l', 'l');
-      var TOOLS = [['cursor', '正常模式 · 点击画面翻 PPT (Esc)'], ['select', '选择 / 移动 (1)'], ['pen', '笔 (2)'], ['marker', '荧光笔 (3)'], ['shape', '几何图形 (4)'], ['text', '文本 (5)'], ['laser', '激光笔 (6)'], ['eraser', '橡皮 (7)']];
-      var toolBtns = {};
-      TOOLS.forEach(function (t) {
-        var b = vbtn(t[0], 'msb-' + t[0], t[1], icon(t[0] === 'shape' ? 'shapes' : t[0], 20));
-        b.onclick = function () {
-          if (t[0] === 'cursor') {           /* 正常模式: 无配置弹窗, 直接切回(点画面=翻PPT) */
-            if (tool !== 'cursor') setTool('cursor');
-            return;
-          }
-          if (tool === t[0]) {
-            /* 再点一次: 开/关配置弹窗(笔色/粗细/形状/字号/橡皮) */
-            if (pop.style.display === 'none' || pop.dataset.tool !== t[0]) { buildPop(); pop.dataset.tool = t[0]; pop.style.display = ''; }
-            else pop.style.display = 'none';
-          } else setTool(t[0]);
-        };
-        toolBtns[t[0]] = b;
-        barL.appendChild(b);
-      });
-      toolBtns.cursor.classList.add('on');   /* 初始即正常模式 */
-      barL.appendChild(sep());
-      barL.appendChild(vbtn('util', 'ms-undo', '撤销板书 (Ctrl+Z)', icon('undo', 20))).onclick = doUndoMs;
-      barL.appendChild(vbtn('util', 'ms-redo', '重做板书 (Ctrl+Y)', icon('redo', 20))).onclick = doRedoMs;
-      barL.appendChild(sep());
-      barL.appendChild(vbtn('page', 'ms-prev', '板书上一页 (←)', icon('chevL', 20))).onclick = function () { prevBoardPage(); };
-      barL.appendChild(vbtn('page', 'ms-addpage', '板书加页(独立于 PPT 页数)', icon('plusPage', 20))).onclick = function () { addBoardPage(); };
-      barL.appendChild(vbtn('page', 'ms-next', '板书下一页 (→)', icon('chevR', 20))).onclick = function () { nextBoardPage(); };
-      /* 右栏: 清空 / 板中板 / 离线 / 黑屏 */
-      var barR = pill('msbar-r', 'r');
-      barR.style.animationName = 'flaSideR';
-      barR.appendChild(vbtn('util', 'ms-clear', '清空本页板书', icon('trash', 20))).onclick = function () { clearInkMs(); };
-      barR.appendChild(vbtn('util', 'ms-bnb', '板中板: 独立黑板(独立加页), 再点收起', icon('board', 20))).onclick = function () { toggleBnb(); };
-      barR.appendChild(vbtn('util', 'ms-eng', '离线引擎(断网可用)', icon('bolt', 20))).onclick = function () {
-        location.href = '/present.html?fid=' + FID + '&token=' + encodeURIComponent(TOKEN);
-      };
-      barR.appendChild(vbtn('util', 'ms-black', '黑屏 (B)', icon('square', 20))).onclick = function () { blk.style.display = ''; };
-
-      /* ---------- 板书页导航(独立于 PPT: PPT 用屏幕点击/微软底栏翻) ---------- */
-      function prevBoardPage() { if (S.msPage > 1) { S.msPage--; inkRedrawMs(); syncPg(); } }
-      function nextBoardPage() { if (S.msPage < totPages) { S.msPage++; inkRedrawMs(); syncPg(); } }
-      function addBoardPage() {
-        S.pages.push({ t: 'ms', n: S.pages.length, pid: 'm' + S.pages.length, bg: 'w' });
-        totPages = S.pages.length;
-        S.msPage = totPages;
-        inkRedrawMs(); syncPg(); saveSoon();
-        toastMs('板书已加页: 第 ' + totPages + ' 页 (与 PPT 页数无关)', 3000);
-      }
-
-      /* ---------- 工具弹窗(白板同款样式) ---------- */
-      var pop = el('div', '', 'position:absolute;left:84px;top:50%;transform:translateY(-50%);z-index:35;display:none;background:rgba(17,20,26,.96);border:1px solid #3a4150;border-radius:16px;padding:14px 16px 10px;box-shadow:0 18px 50px rgba(0,0,0,.5);backdrop-filter:blur(20px);max-width:92vw');
-      function swatchRow(colors, cur, onpick, custom) {
-        var row = el('div', 'pop-row swatches');
-        colors.forEach(function (c) {
-          var b = el('button', 'swatch' + (c === cur ? ' on' : ''), '');
-          b.style.background = c;
-          b.onclick = function () {
-            onpick(c);
-            Array.prototype.forEach.call(row.querySelectorAll('.swatch'), function (x) { x.classList.remove('on'); });
-            b.classList.add('on');
-          };
-          row.appendChild(b);
-        });
-        if (custom) {
-          var lab = el('label', 'swatch custom', '');
-          lab.title = '自定义颜色';
-          var ci = el('input'); ci.type = 'color'; ci.value = cur;
-          ci.oninput = function () { onpick(ci.value); };
-          lab.appendChild(ci);
-          row.appendChild(lab);
-        }
-        return row;
-      }
-      function sliderRow(label, min, max, val, oninput) {
-        var row = el('div', 'pop-row');
-        var lb = el('span', 'pop-lb', ''); lb.textContent = label;
-        var rng = el('input'); rng.type = 'range'; rng.min = min; rng.max = max; rng.value = val;
-        rng.style.cssText = 'flex:1;min-width:100px;accent-color:#e5e7eb';
-        var valB = el('b', 'pop-val', ''); valB.textContent = val;
-        rng.oninput = function () { valB.textContent = rng.value; oninput(+rng.value); };
-        row.appendChild(lb); row.appendChild(rng); row.appendChild(valB);
-        return row;
-      }
-      function buildPop() {
-        pop.innerHTML = '';
-        pop.style.display = '';
-        if (tool === 'pen') {
-          pop.appendChild(swatchRow(PEN_COLORS, cfg.pen.color, function (c) { cfg.pen.color = c; }, true));
-          pop.appendChild(sliderRow('粗细', 1, 12, cfg.pen.width, function (v) { cfg.pen.width = v; }));
-        } else if (tool === 'marker') {
-          pop.appendChild(swatchRow(MARKER_COLORS, cfg.marker.color, function (c) { cfg.marker.color = c; }, true));
-          pop.appendChild(sliderRow('粗细', 6, 30, cfg.marker.width, function (v) { cfg.marker.width = v; }));
-        } else if (tool === 'shape') {
-          var srow = el('div', 'pop-row');
-          SHAPE_LIST.forEach(function (sh) {
-            var b = el('button', 'swatch' + (cfg.shape.type === sh[0] ? ' on' : ''), '');
-            b.title = sh[1]; b.innerHTML = SHAPE_MINI[sh[0]];
-            b.style.cssText = 'width:34px;height:34px;border-radius:9px;border:1px solid #4b5563;background:rgba(255,255,255,.05);color:#e5e7eb;display:inline-grid;place-items:center;cursor:pointer;padding:0';
-            if (cfg.shape.type === sh[0]) b.style.borderColor = '#fff';
-            b.onclick = function () {
-              cfg.shape.type = sh[0];
-              Array.prototype.forEach.call(srow.children, function (x) { x.style.borderColor = '#4b5563'; });
-              b.style.borderColor = '#fff';
-            };
-            srow.appendChild(b);
-          });
-          pop.appendChild(srow);
-          pop.appendChild(swatchRow(SHAPE_COLORS, cfg.shape.color, function (c) { cfg.shape.color = c; }, true));
-          pop.appendChild(sliderRow('粗细', 1, 12, cfg.shape.width, function (v) { cfg.shape.width = v; }));
-        } else if (tool === 'text') {
-          pop.appendChild(swatchRow(TEXT_COLORS, cfg.text.color, function (c) { cfg.text.color = c; }, true));
-          pop.appendChild(sliderRow('字号', 12, 72, cfg.text.size, function (v) { cfg.text.size = v; }));
-          var hint = el('p', '', 'font:11px inherit;color:#9ca3af;margin:4px 0 0');
-          hint.textContent = '点击画面输入文字，Enter 确认';
-          pop.appendChild(hint);
-        } else if (tool === 'eraser') {
-          pop.appendChild(sliderRow('橡皮大小', 6, 90, cfg.eraser.width, function (v) { cfg.eraser.width = v; }));
-          var eh = el('p', '', 'font:11px inherit;color:#9ca3af;margin:4px 0 0');
-          eh.textContent = '划过即擦除整条笔迹';
-          pop.appendChild(eh);
-        }
-        var show = tool === 'pen' || tool === 'marker' || tool === 'shape' || tool === 'text' || tool === 'eraser';
-        pop.style.display = show ? 'block' : 'none';
-      }
-      wrap.appendChild(pop);
-      wrap.addEventListener('pointerdown', function (e) {
-        if (pop.style.display !== 'none' && !pop.contains(e.target)) pop.style.display = 'none';
-      }, true);
-
-      function setTool(t) {
-        var prev = tool;
-        commitText();
-        tool = t;
-        laserOn = t === 'laser';
-        if (laserOn) laserLoop(); else { var lc = laserCv.getContext('2d'); lc.setTransform(1, 0, 0, 1, 0, 0); lc.clearRect(0, 0, laserCv.width, laserCv.height); }
-        if (t !== 'select') { selId = null; inkRedrawMs(); }
-        ink.style.pointerEvents = (t === 'cursor') ? 'none' : 'auto';
-        ink.style.cursor = t === 'eraser' ? 'cell' : (t === 'select' ? 'default' : (t === 'cursor' ? '' : 'crosshair'));
-        hideLd();
-        TOOLS.forEach(function (tt) {
-          if (t === tt[0]) toolBtns[tt[0]].classList.add('on'); else toolBtns[tt[0]].classList.remove('on');
-        });
-        pop.style.display = 'none';   /* 切工具不弹窗: 配置窗只在"再点一次同工具"时出现 */
-        if (t !== 'cursor') wakeTop();
-        if (t === 'cursor' && prev !== 'cursor') toastMs('正常模式 · 点击画面即可翻 PPT', 2200);
-      }
-
-      function syncPg() { bPg.textContent = S.msPage + ' / ' + totPages; }
-
-      /* ---------- 板中板: 独立黑板(自己的页数, 与 PPT 页完全独立) ---------- */
-      var bbN = 1, bbCur = 0, bbOpen = false, bbOps = {}, bbRedos = {};
-      (function () {
-        var m = 0;
-        for (var k in S.strokes) { var mm = /^bb(\d+)$/.exec(k); if (mm) m = Math.max(m, +mm[1] + 1); }
-        var bbSaved = (S.bbN && typeof S.bbN === 'object' && S.bbN.n) ? S.bbN.n : (typeof S.bbN === 'number' ? S.bbN : 0);
-        if (bbSaved > m) m = bbSaved;
-        bbN = Math.max(1, m); S.bbN = bbN;
-      })();
-      function bbPid() { return 'bb' + bbCur; }
-      var bnb = el('div', '', 'position:absolute;left:50%;top:0;transform:translate(-50%,-104%);width:min(94vw,1500px);height:66vh;z-index:38;background:#141922;border:1px solid #3a4150;border-top:none;border-radius:0 0 26px 26px;box-shadow:0 34px 90px rgba(0,0,0,.55);transition:transform .5s cubic-bezier(.22,1,.36,1);display:flex;flex-direction:column');
-      bnb.id = 'msbnb';
-      var bnbBar = el('div', '', 'display:flex;align-items:center;gap:6px;padding:8px 14px;border-bottom:1px solid #2a3038;color:#d5d9e0;font:12px ' + FONT_STACK + ';flex-shrink:0');
-      var bnbTitle = el('span', '', 'font-weight:700;color:#e8eaee;letter-spacing:.5px');
-      bnbTitle.textContent = '\u25a4 板中板';
-      function bbBtn(id, title, html) {
-        var b = el('button', '', 'border:none;background:transparent;color:#aab2bf;border-radius:9px;min-width:32px;height:32px;padding:0 8px;cursor:pointer;display:inline-grid;place-items:center;font:12px ' + FONT_STACK + ';transition:all .15s');
-        b.id = id; b.title = title; b.innerHTML = html;
-        b.onmouseenter = function () { b.style.background = 'rgba(255,255,255,.09)'; b.style.color = '#fff'; };
-        b.onmouseleave = function () { b.style.background = 'transparent'; b.style.color = '#aab2bf'; };
-        return b;
-      }
-      var bbPrev = bbBtn('bnb-prev', '板中板上一页', '‹');
-      var bbPg = el('span', '', 'min-width:56px;text-align:center;color:#e8eaee;font-weight:600;font-variant-numeric:tabular-nums');
-      bbPg.id = 'bnb-pg';
-      var bbNext = bbBtn('bnb-next', '板中板下一页', '›');
-      var bbAdd = bbBtn('bnb-add', '板中板加页(独立于 PPT 页数)', '＋ 加页');
-      var bbUndoB = bbBtn('bnb-undo', '撤销板中板 (Ctrl+Z)', icon('undo', 16));
-      var bbClearB = bbBtn('bnb-clear', '清空板中板本页', icon('trash', 16));
-      var bbHide = bbBtn('bnb-hide', '收起(再点工具栏"板中板"可再次放下)', '✕ 收起');
-      bbPrev.onclick = function () { if (bbCur > 0) { bbCur--; bbRedraw(); } };
-      bbNext.onclick = function () { if (bbCur < bbN - 1) { bbCur++; bbRedraw(); } };
-      bbAdd.onclick = function () { bbN++; S.bbN = bbN; bbCur = bbN - 1; bbRedraw(); saveSoon(); toastMs('板中板已加页: 第 ' + bbN + ' 页(独立于 PPT)'); };
-      bbUndoB.onclick = function () { doBbUndo(); };
-      bbClearB.onclick = function () {
-        var pid = bbPid();
-        if ((S.strokes[pid] || []).length) {
-          bbOps[pid] = bbOps[pid] || []; bbRedos[pid] = [];
-          bbOps[pid].push({ op: 'clear', list: S.strokes[pid].slice() });
-          S.strokes[pid] = [];
-          bbRedraw(); saveSoon();
-        }
-      };
-      bbHide.onclick = function () { toggleBnb(); };
-      bnbBar.appendChild(bnbTitle);
-      bnbBar.appendChild(el('span', '', 'width:1px;height:18px;background:#2a3038;margin:0 4px'));
-      bnbBar.appendChild(bbPrev); bnbBar.appendChild(bbPg); bnbBar.appendChild(bbNext);
-      bnbBar.appendChild(bbAdd);
-      bnbBar.appendChild(el('span', '', 'width:1px;height:18px;background:#2a3038;margin:0 4px'));
-      bnbBar.appendChild(bbUndoB); bnbBar.appendChild(bbClearB);
-      bnbBar.appendChild(el('span', '', 'flex:1'));
-      bnbBar.appendChild(bbHide);
-      var bbWrap = el('div', '', 'flex:1;position:relative;overflow:hidden');
-      var bbCv = el('canvas', '', 'position:absolute;left:0;top:0;width:100%;height:100%;touch-action:none;cursor:crosshair');
-      bbCv.id = 'bnb-cv';
-      bbWrap.appendChild(bbCv);
-      bnb.appendChild(bnbBar); bnb.appendChild(bbWrap);
-      wrap.appendChild(bnb);
-      function bbGeom() {
-        var r = bbCv.getBoundingClientRect();
-        var k = Math.min(r.width / 1280, r.height / 720);
-        return { k: k, ox: (r.width - 1280 * k) / 2, oy: (r.height - 720 * k) / 2 };
-      }
-      function bbRedraw() {
-        bbPg.textContent = (bbCur + 1) + ' / ' + bbN;
-        var r = bbCv.getBoundingClientRect();
-        if (r.width < 2) return;
-        if (bbCv.width !== Math.round(r.width) || bbCv.height !== Math.round(r.height)) { bbCv.width = Math.round(r.width); bbCv.height = Math.round(r.height); }
-        var g = bbCv.getContext('2d');
-        g.setTransform(1, 0, 0, 1, 0, 0); g.clearRect(0, 0, bbCv.width, bbCv.height);
-        var gm = bbGeom();
-        g.save(); g.translate(gm.ox, gm.oy); g.scale(gm.k, gm.k);
-        (S.strokes[bbPid()] || []).forEach(function (st) { g.save(); drawStroke(g, st); g.restore(); });
-        g.restore();
-      }
-      function doBbUndo() {
-        var pid = bbPid(); bbOps[pid] = bbOps[pid] || [];
-        var op = bbOps[pid].pop();
-        if (!op) { toastMs('板中板没有可撤销的操作'); return; }
-        bbRedos[pid] = bbRedos[pid] || [];
-        var arr = S.strokes[pid] = S.strokes[pid] || [];
-        if (op.op === 'add') { var i = arr.indexOf(op.s); if (i >= 0) arr.splice(i, 1); }
-        else if (op.op === 'del') { arr.push(op.s); }
-        else if (op.op === 'clear') { S.strokes[pid] = op.list.slice(); }
-        bbRedos[pid].push(op);
-        bbRedraw(); saveSoon();
-      }
-      function doBbRedo() {
-        var pid = bbPid(); bbRedos[pid] = bbRedos[pid] || [];
-        var op = bbRedos[pid].pop();
-        if (!op) return;
-        bbOps[pid].push(op);
-        var arr = S.strokes[pid] = S.strokes[pid] || [];
-        if (op.op === 'add') arr.push(op.s);
-        else if (op.op === 'del') { var i = arr.indexOf(op.s); if (i >= 0) arr.splice(i, 1); }
-        else if (op.op === 'clear') { S.strokes[pid] = []; }
-        bbRedraw(); saveSoon();
-      }
-      var bbDrawing = null;
-      function bbPt(e) {
-        var r = bbCv.getBoundingClientRect();
-        var gm = bbGeom();
-        return [(e.clientX - r.left - gm.ox) / gm.k, (e.clientY - r.top - gm.oy) / gm.k];
-      }
-      function bbErase(p) {
-        var pid = bbPid(), arr = S.strokes[pid] || [];
-        for (var i = arr.length - 1; i >= 0; i--) {
-          var st = arr[i], hit = false;
-          for (var j = 0; j < st.pts.length; j++) {
-            if (Math.abs(st.pts[j][0] - p[0]) < 14 && Math.abs(st.pts[j][1] - p[1]) < 14) { hit = true; break; }
-          }
-          if (hit) {
-            arr.splice(i, 1);
-            bbOps[pid] = bbOps[pid] || []; bbRedos[pid] = [];
-            bbOps[pid].push({ op: 'del', s: st });
-            saveSoon(); bbRedraw();
-          }
-        }
-      }
-      bbCv.addEventListener('pointerdown', function (e) {
-        e.preventDefault(); e.stopPropagation();
-        if (bbCv.setPointerCapture) { try { bbCv.setPointerCapture(e.pointerId); } catch (err) { } }
-        var p0 = bbPt(e);
-        if (tool === 'eraser') { bbErase(p0); return; }
-        var tt = (tool === 'marker' || tool === 'laser') ? tool : 'pen';
-        bbDrawing = { tool: tt, color: cfg.color, width: cfg.width, pts: [p0] };
-        bbRedraw();
-      });
-      bbCv.addEventListener('pointermove', function (e) {
-        if (tool === 'eraser') { if (e.buttons || e.pointerType === 'touch') bbErase(bbPt(e)); return; }
-        if (!bbDrawing) return;
-        var p = bbPt(e);
-        var last = bbDrawing.pts[bbDrawing.pts.length - 1];
-        if (Math.abs(p[0] - last[0]) + Math.abs(p[1] - last[1]) < 1.2) return;
-        bbDrawing.pts.push(p);
-        bbRedraw();
-      });
-      function bbEnd() {
-        if (!bbDrawing) return;
-        var pid = bbPid();
-        if (bbDrawing.pts.length > 1) {
-          (S.strokes[pid] = S.strokes[pid] || []).push(bbDrawing);
-          bbOps[pid] = bbOps[pid] || []; bbRedos[pid] = [];
-          bbOps[pid].push({ op: 'add', s: bbDrawing });
-          if (bbOps[pid].length > 200) bbOps[pid].shift();
-          saveSoon();
-        }
-        bbDrawing = null; bbRedraw();
-      }
-      bbCv.addEventListener('pointerup', bbEnd);
-      bbCv.addEventListener('pointercancel', bbEnd);
-      function toggleBnb() {
-        bbOpen = !bbOpen;
-        bnb.style.transform = bbOpen ? 'translate(-50%,0)' : 'translate(-50%,-104%)';
-        if (bbOpen) setTimeout(bbRedraw, 80);
-        var ab = document.getElementById('ms-bnb');
-        if (ab) { if (bbOpen) ab.classList.add('on'); else ab.classList.remove('on'); }
-      }
-      window.addEventListener('resize', function () { if (bbOpen) bbRedraw(); });
-
-      /* ---------- 黑屏/退出/加载 ---------- */
-      var blk = el('div', '', 'position:absolute;inset:0;background:#000;display:none;z-index:40');
-      blk.onclick = function () { blk.style.display = 'none'; };
-      wrap.appendChild(blk);
-      var exitHint = el('div', '', 'position:absolute;left:50%;top:38%;transform:translate(-50%,-50%);display:none;z-index:60;background:rgba(17,20,25,.96);border:1px solid #3a4150;border-radius:14px;padding:16px 24px;color:#e5e7eb;font:14px ' + FONT_STACK);
-      exitHint.textContent = '可直接关闭此标签页退出放映';
-      wrap.appendChild(exitHint);
-      var warn = sl.ms_ok ? '' :
-        '<div style="margin-top:10px;color:#fbbf24;font-size:12px">⚠ 直链(' + sl.direct + ')疑似不符合微软要求(需域名+80/443), 请在管理后台设置公开访问地址</div>';
-      var ld = el('div', '', 'position:absolute;left:50%;top:50%;transform:translate(-50%,-50%);color:#e5e7eb;font:14px/1.9 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;text-align:center;z-index:50;background:rgba(0,0,0,.82);padding:22px 32px;border-radius:14px;max-width:84%');
-      ld.id = 'msld';
-      ld.innerHTML = '微软服务器正在抓取课件（首次约 30–60 秒）…<br>' +
-        '<span style="font-size:12px;color:#9ca3af">加载完成后: 点画面推进动画 · ‹ › 翻页 · 工具栏板书</span>' + warn;
-      function hideLd() { ld.style.display = 'none'; }
-      fr.onload = function () { setTimeout(hideLd, 4000); };
-      setTimeout(function () {
-        toastMs('PPT: 点画面前进 · 底部中央是微软翻页键(可后退) · 左右两侧是板书工具 · 左栏 ‹＋› 翻板书页', 9000);
-      }, 2500);
-      setTimeout(hideLd, 90000);
-      wrap.appendChild(ld);
-
-      /* ---------- 键盘 ---------- */
-      var KEY_TOOL = { '1': 'select', '2': 'pen', '3': 'marker', '4': 'shape', '5': 'text', '6': 'laser', '7': 'eraser' };
-      document.addEventListener('keydown', function (e) {   /* capture: 抢在全局翻页键之前 */
-        var kk = e.key.toLowerCase();
-        if (!e.ctrlKey && !e.metaKey && !e.altKey) {
-          if (e.key === 'ArrowLeft') { e.preventDefault(); e.stopPropagation(); prevBoardPage(); return; }
-          if (e.key === 'ArrowRight') { e.preventDefault(); e.stopPropagation(); nextBoardPage(); return; }
-        }
-        void kk;
-        if (textInput) return;
-        var k = e.key.toLowerCase();
-        if ((e.ctrlKey || e.metaKey) && k === 'z') { e.preventDefault(); if (bbOpen) doBbUndo(); else doUndoMs(); return; }
-        if ((e.ctrlKey || e.metaKey) && k === 'y') { e.preventDefault(); if (bbOpen) doBbRedo(); else doRedoMs(); return; }
-        if (e.ctrlKey || e.metaKey || e.altKey) return;
-        if (KEY_TOOL[k]) setTool(tool === KEY_TOOL[k] ? 'cursor' : KEY_TOOL[k]);
-        else if (k === 'p') setTool(tool === 'pen' ? 'cursor' : 'pen');
-        else if (k === 'l') setTool(tool === 'laser' ? 'cursor' : 'laser');
-        else if (k === 'e') setTool('eraser');
-        else if (k === 'b') blk.style.display = blk.style.display === 'none' ? '' : 'none';
-        else if (k === 'f') bFull.onclick();
-        else if (k === 'delete' || k === 'backspace') {
-          if (selId) {
-            var arr = S.strokes[msPid()] || [];
-            for (var i = 0; i < arr.length; i++) {
-              if (arr[i].id === selId) {
-                var st = arr.splice(i, 1)[0];
-                opPush(msPid(), { op: 'del', s: st });
-                selId = null; inkRedrawMs(); saveSoon();
-                break;
-              }
-            }
-          }
-        }
-        else if (k === 'escape') { if (blk.style.display !== 'none') blk.style.display = 'none'; else setTool('cursor'); }
-      }, true);
-
-      /* ---------- 计时/布局 ---------- */
-      setInterval(function () {
-        var sec = Math.floor((Date.now() - S.t0) / 1000);
-        var mm = Math.floor(sec / 60), ss = sec % 60;
-        bTime.textContent = (mm < 10 ? '0' : '') + mm + ':' + (ss < 10 ? '0' : '') + ss;
-      }, 1000);
-      function layoutMs() {
-        canvasSize(); laserResize();
-        if (bbOpen) bbRedraw();
-      }
-      window.addEventListener('resize', layoutMs);
-      layoutMs(); syncPg();
-      document.body.appendChild(wrap);
-      setInterval(function () { if (S.dirty) saveNow(); }, 15000);
+      return prefetchImgs();
+    }).then(function () {
+      buildUI();
+      showPage(0);
+    }).catch(function (e) {
+      msFail(e.message || '本地放映引擎启动失败');
     });
   }
+
+  function msTrack() {
+    S.msMode = true;   /* 原生 UI/键盘不再叠加(修 Esc 关标签页) */
+    if (!window.MSStage) {
+      fallbackLocalPresent();
+      return;
+    }
+    document.body.innerHTML = '';
+    document.body.style.cssText = 'margin:0;overflow:hidden;background:#000';
+    window.MSStage.mount({
+      fid: FID, token: TOKEN, meta: S.meta, mode: 'present',
+      mount: document.body, onExit: exitPresent
+    }).catch(function (e) {
+      console.warn('MSStage mount failed, falling back to local presentation:', e);
+      fallbackLocalPresent();
+    });
+  }
+  function msFail(msg) {
+    document.body.innerHTML = '';
+    document.body.style.cssText = 'margin:0;background:#121316;color:#e8eaef;' +
+      'font:500 15px/1.7 -apple-system,"PingFang SC","Microsoft YaHei",sans-serif;' +
+      'display:grid;place-items:center;padding:28px;text-align:center';
+    var d = el('div', '', 'max-width:560px');
+    d.innerHTML = '<div style="font-size:40px;line-height:1;margin-bottom:14px">💡</div>' +
+      '<b style="font-size:18px">放映引擎提示</b>' +
+      '<p style="margin:10px 0 18px;color:rgba(255,255,255,.65)">' +
+      String(msg).replace(/[<>&]/g, '') + '</p>' +
+      '<button id="msLocalBtn" style="padding:10px 22px;border-radius:10px;border:none;' +
+      'background:#09090b;color:#fff;font:600 14px/1 inherit;cursor:pointer;margin-right:8px;border-radius:8px;border:none;">启动本地原生放映</button>' +
+      '<button id="msRetry" style="padding:10px 18px;border-radius:10px;border:1px solid rgba(255,255,255,.24);' +
+      'background:rgba(255,255,255,.1);color:#fff;font:600 13.5px/1 inherit;cursor:pointer;margin-right:8px;">重试在线放映</button>' +
+      '<button id="msBack" style="padding:10px 18px;border-radius:10px;border:1px solid rgba(255,255,255,.18);' +
+      'background:transparent;color:rgba(255,255,255,.8);font:600 13.5px/1 inherit;cursor:pointer">返回课件库</button>';
+    document.body.appendChild(d);
+    d.querySelector('#msLocalBtn').onclick = function () { fallbackLocalPresent(); };
+    d.querySelector('#msRetry').onclick = function () { location.reload(); };
+    d.querySelector('#msBack').onclick = function () {
+      if (window.history.length > 1) window.history.back(); else window.close();
+    };
+  }
+
 
   function openPdf() {
     return loadScript('/lib/pdfjs/pdf.min.js').then(function () {
@@ -1235,11 +484,14 @@
 
   function renderPdfPage(p, canvas, box, layer, mySeq) {
     var n = p.n || 0, mp = mPage(n);
-    var useBg = mp && mp.mode === 'elements' && !S.compare && !mp.bgfail && !S.bgFailed;
+    var hasElements = mp && mp.elements && mp.elements.length;
+    var useBg = hasElements && !S.compare && !mp.bgfail && !S.bgFailed;
     var docP = useBg ? ensureBg() : Promise.resolve(S.doc);
     return docP.then(function (doc) {
       if (mySeq !== S.seq) throw { stale: true };
-      return (doc || S.doc).getPage(n + 1);
+      var targetDoc = (useBg && doc) ? doc : S.doc;
+      var pageNum = Math.min(n + 1, targetDoc.numPages);
+      return targetDoc.getPage(pageNum);
     }).then(function (page) {
       if (mySeq !== S.seq) throw { stale: true };
       var vp = page.getViewport({ scale: 1 });
@@ -1259,7 +511,7 @@
       }).promise;
     }).then(function () {
       if (mySeq !== S.seq) throw { stale: true };
-      if (useBg) return buildElements(mp, layer, p);
+      if (hasElements && !S.compare) return buildElements(mp, layer, p, useBg);
     });
   }
 
@@ -1386,7 +638,7 @@
     });
   }
 
-  function buildElements(mp, layer, p) {
+  function buildElements(mp, layer, p, useBg) {
     var ef = emuFactor();
     var recs = [];
     (mp.elements || []).forEach(function (e) {
@@ -1403,6 +655,10 @@
       buildContent(e, inner, ef);
       var visibleInitially = !(e.steps || []).some(function (st) { return st.t === 'in'; });
       d.style.visibility = visibleInitially ? 'visible' : 'hidden';
+      if (!visibleInitially && !useBg) {
+        d.setAttribute('data-masked', '1');
+        d.style.backgroundColor = '#ffffff';
+      }
       layer.appendChild(d);
       recs.push({ e: e, d: d, inner: inner });
     });
@@ -1620,6 +876,10 @@
     var d = rec.d, inner = rec.inner;
     var dur = instant ? 0 : (st.dur || 500);
     d.style.visibility = 'visible';
+    if (d.getAttribute('data-masked')) {
+      d.style.backgroundColor = 'transparent';
+      d.removeAttribute('data-masked');
+    }
     d.offsetHeight;
     if (st.e === 'appear' || dur <= 0) {
       d.style.transition = 'none'; d.style.opacity = '';
@@ -1879,23 +1139,32 @@
     return Math.hypot(p[0] - (a[0] + t * dx), p[1] - (a[1] + t * dy));
   }
   function eraseAt(pt) {
+    if (!pt) return;
     var pid = curPage().pid;
     var arr = S.strokes[pid] || [];
     var r = (S.eraser.width || 28) / 2;
+    var px = (typeof pt.x === 'number') ? pt.x : (typeof pt[0] === 'number' ? pt[0] : 0);
+    var py = (typeof pt.y === 'number') ? pt.y : (typeof pt[1] === 'number' ? pt[1] : 0);
+    var p = [px, py];
+    var changed = false;
     for (var i = arr.length - 1; i >= 0; i--) {
       var s = arr[i], hit = false;
+      var half = (s.width || 3) / 2;
       if (s.tool === 'text') {
-        hit = pt[0] >= s.pts[0][0] - 20 && pt[0] <= s.pts[0][0] + (String(s.text || '').length * s.width * .6 + 20) &&
-              pt[1] >= s.pts[0][1] - 10 && pt[1] <= s.pts[0][1] + s.width * 1.4;
-      } else {
-        for (var j = 0; j < s.pts.length; j++) {
-          var a = s.pts[j], b = s.pts[Math.min(j + 1, s.pts.length - 1)];
-          if (segDist(pt, a, b) < r) { hit = true; break; }
+        hit = px >= s.pts[0][0] - 20 && px <= s.pts[0][0] + (String(s.text || '').length * s.width * .6 + 20) &&
+              py >= s.pts[0][1] - 10 && py <= s.pts[0][1] + s.width * 1.4;
+      } else if (s.pts && s.pts.length) {
+        if (s.pts.length === 1) {
+          hit = Math.hypot(px - s.pts[0][0], py - s.pts[0][1]) <= r + half;
+        } else {
+          for (var j = 0; j < s.pts.length - 1; j++) {
+            if (segDist(p, s.pts[j], s.pts[j + 1]) <= r + half) { hit = true; break; }
+          }
         }
       }
-      if (hit) { arr.splice(i, 1); saveSoon(); }
+      if (hit) { arr.splice(i, 1); changed = true; }
     }
-    inkRedraw();
+    if (changed) { saveSoon(); inkRedraw(); }
   }
 
   /* ---------- 激光笔 ---------- */
@@ -1946,9 +1215,15 @@
   function onKey(e) {
     if (e.target && /INPUT|TEXTAREA|SELECT|VIDEO|AUDIO/.test(e.target.tagName)) return;
     var k = e.key;
-    if (k === 'ArrowRight' || k === ' ' || k === 'PageDown' || k === 'Enter') { e.preventDefault(); advance(); }
-    else if (k === '.' || k === 'ArrowDown') { e.preventDefault(); revealAll(); }
-    else if (k === 'ArrowLeft' || k === 'PageUp') { e.preventDefault(); prevPage(); }
+    var isNext = (k === 'ArrowRight' || k === ' ' || k === 'PageDown' || k === 'Enter' || k === 'ArrowDown' ||
+                  k === 'Right' || k === 'Down' || k === 'Next' || e.code === 'PageDown' || e.code === 'ArrowDown' ||
+                  e.keyCode === 34 || e.keyCode === 40 || e.keyCode === 39 || e.keyCode === 32 || e.keyCode === 13);
+    var isPrev = (k === 'ArrowLeft' || k === 'PageUp' || k === 'ArrowUp' ||
+                  k === 'Left' || k === 'Up' || k === 'Prior' || e.code === 'PageUp' || e.code === 'ArrowUp' ||
+                  e.keyCode === 33 || e.keyCode === 38 || e.keyCode === 37);
+    if (isNext) { e.preventDefault(); advance(); }
+    else if (isPrev) { e.preventDefault(); prevPage(); }
+    else if (k === '.') { e.preventDefault(); revealAll(); }
     else if (k === 'Home') showPage(0);
     else if (k === 'End') showPage(S.pages.length - 1);
     else if (k === 'Escape') exitPresent();

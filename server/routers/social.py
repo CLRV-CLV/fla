@@ -1,22 +1,15 @@
-"""FLA v1.26 - 社区: 论坛(板块/帖子/回复) + 聊天(群组/实时消息)
-管理员可编辑/删除任意内容, 权限(允许建群等)由系统设置控制"""
+"""FLA v1.26 - 社区: 论坛(板块/帖子/回复)
+管理员可编辑/删除任意内容, 权限(允许发帖等)由系统设置控制
+
+v1.27: 聊天升级为微信级(私聊/未读/已读回执/免打扰/置顶/群昵称/图片文件语音/
+表情回应/@提醒/正在输入), 代码迁到 routers/chat.py, 本模块只留论坛。"""
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from .. import db
-from ..deps import require_user
+from ..deps import require_user, user_card as _user_card
 
 router = APIRouter(prefix="/api")
-
-
-def _user_card(uid):
-    r = db.q1("SELECT id,username,nickname,avatar,role,is_teacher,cert_title,cert_icon,cert_color FROM users WHERE id=?", (uid,))
-    if not r:
-        return {"id": 0, "username": "?", "nickname": "已注销用户", "avatar": "", "role": "user",
-                "is_teacher": False, "cert_title": "", "cert_icon": "", "cert_color": ""}
-    return {"id": r["id"], "username": r["username"], "nickname": r["nickname"] or r["username"],
-            "avatar": r["avatar"], "role": r["role"], "is_teacher": bool(r["is_teacher"]),
-            "cert_title": r["cert_title"], "cert_icon": r["cert_icon"], "cert_color": r["cert_color"]}
 
 
 def _clean(s, n):
@@ -36,7 +29,7 @@ def forum_boards(request: Request):
 
 
 @router.get("/forum/threads")
-def forum_threads(request: Request, board: int = 0, page: int = 1):
+def forum_threads(request: Request, board: int = 0, page: int = 1, q: str = ""):
     u = require_user(request)
     size = 15
     page = max(1, page)
@@ -44,6 +37,10 @@ def forum_threads(request: Request, board: int = 0, page: int = 1):
     if board:
         where = "WHERE t.board_id=?"
         args.append(board)
+    kw = (q or "").strip()[:50]
+    if kw:
+        where = (where + " AND " if where else "WHERE ") + "(t.title LIKE ? OR t.content LIKE ?)"
+        args += [f"%{kw}%", f"%{kw}%"]
     total = db.q1(f"SELECT COUNT(*) AS c FROM forum_threads t {where}", tuple(args))["c"]
     rows = db.q(
         f"SELECT t.* FROM forum_threads t {where}"
@@ -209,144 +206,4 @@ def delete_post(pid: int, request: Request):
     return {"ok": True}
 
 
-# ================================ 聊天 ================================
-
-def _room_out(r, uid):
-    members = db.q("SELECT uid FROM chat_members WHERE room_id=?", (r["id"],))
-    last = db.q1("SELECT * FROM chat_messages WHERE room_id=? AND deleted=0 ORDER BY id DESC LIMIT 1", (r["id"],))
-    cnt = db.q1("SELECT COUNT(*) AS c FROM chat_messages WHERE room_id=? AND deleted=0", (r["id"],))["c"]
-    return {"id": r["id"], "name": r["name"], "official": bool(r["official"]),
-            "members": len(members) + (1 if r["official"] else 0),
-            "joined": any(m["uid"] == uid for m in members) or bool(r["official"]),
-            "messages": cnt,
-            "last": ({"content": last["content"], "created_at": last["created_at"],
-                      "uid": last["uid"]} if last else None)}
-
-
-@router.get("/chat/rooms")
-def chat_rooms(request: Request):
-    u = require_user(request)
-    rows = db.q("SELECT * FROM chat_rooms ORDER BY official DESC, id")
-    return {"items": [_room_out(r, u["id"]) for r in rows],
-            "allow_create": db.get_setting("allow_group_create", "0") == "1" or u["role"] == "admin"}
-
-
-class RoomIn(BaseModel):
-    name: str
-
-
-@router.post("/chat/rooms")
-def create_room(body: RoomIn, request: Request):
-    u = require_user(request)
-    if db.get_setting("chat_enabled", "1") != "1" and u["role"] != "admin":
-        raise HTTPException(403, "聊天区已由管理员关闭")
-    if db.get_setting("allow_group_create", "0") != "1" and u["role"] != "admin":
-        raise HTTPException(403, "管理员未开放创建群组")
-    name = _clean(body.name, 30)
-    if len(name) < 2:
-        raise HTTPException(400, "群组名太短")
-    cur = db.ex("INSERT INTO chat_rooms(name,owner_id,official,created_at) VALUES(?,?,0,?)",
-                (name, u["id"], db.now()))
-    rid = cur.lastrowid
-    db.ex("INSERT INTO chat_members(room_id,uid,joined_at) VALUES(?,?,?)", (rid, u["id"], db.now()))
-    return {"id": rid}
-
-
-@router.post("/chat/rooms/{rid}/join")
-def join_room(rid: int, request: Request):
-    u = require_user(request)
-    r = db.q1("SELECT * FROM chat_rooms WHERE id=?", (rid,))
-    if not r:
-        raise HTTPException(404, "群组不存在")
-    db.ex("INSERT OR IGNORE INTO chat_members(room_id,uid,joined_at) VALUES(?,?,?)", (rid, u["id"], db.now()))
-    return {"ok": True}
-
-
-@router.get("/chat/rooms/{rid}/messages")
-def room_messages(rid: int, request: Request, after: int = 0, limit: int = 60):
-    u = require_user(request)
-    r = db.q1("SELECT * FROM chat_rooms WHERE id=?", (rid,))
-    if not r:
-        raise HTTPException(404, "群组不存在")
-    limit = max(1, min(limit, 100))
-    if after:
-        rows = db.q("SELECT * FROM chat_messages WHERE room_id=? AND id>? ORDER BY id LIMIT ?",
-                    (rid, after, limit))
-    else:
-        rows = db.q("SELECT * FROM (SELECT * FROM chat_messages WHERE room_id=? ORDER BY id DESC LIMIT ?)"
-                    " ORDER BY id", (rid, limit))
-    out = []
-    for m in rows:
-        out.append({"id": m["id"], "content": "" if m["deleted"] else m["content"],
-                    "deleted": bool(m["deleted"]), "uid": m["uid"], "author": _user_card(m["uid"]),
-                    "edited": bool(m["edited"]), "edited_by_admin": bool(m["edited_by"]) and m["edited_by"] != m["uid"],
-                    "created_at": m["created_at"], "mine": m["uid"] == u["id"]})
-    return {"items": out, "server_time": db.now()}
-
-
-class MsgIn(BaseModel):
-    content: str
-
-
-@router.post("/chat/rooms/{rid}/messages")
-def send_message(rid: int, body: MsgIn, request: Request):
-    u = require_user(request)
-    if "chat_banned" in u.keys() and u["chat_banned"]:
-        raise HTTPException(403, "你已被管理员禁言")
-    if db.get_setting("chat_enabled", "1") != "1" and u["role"] != "admin":
-        raise HTTPException(403, "聊天区已由管理员关闭")
-    r = db.q1("SELECT * FROM chat_rooms WHERE id=?", (rid,))
-    if not r:
-        raise HTTPException(404, "群组不存在")
-    content = _clean(body.content, 500)
-    if not content:
-        raise HTTPException(400, "消息不能为空")
-    db.ex("INSERT OR IGNORE INTO chat_members(room_id,uid,joined_at) VALUES(?,?,?)", (rid, u["id"], db.now()))
-    cur = db.ex("INSERT INTO chat_messages(room_id,uid,content,created_at) VALUES(?,?,?,?)",
-                (rid, u["id"], content, db.now()))
-    return {"id": cur.lastrowid}
-
-
-class MsgPatch(BaseModel):
-    content: str
-
-
-@router.patch("/chat/messages/{mid}")
-def edit_message(mid: int, body: MsgPatch, request: Request):
-    u = require_user(request)
-    m = db.q1("SELECT * FROM chat_messages WHERE id=?", (mid,))
-    if not m or m["deleted"]:
-        raise HTTPException(404, "消息不存在")
-    if m["uid"] != u["id"] and u["role"] != "admin":
-        raise HTTPException(403, "只能编辑自己的消息")
-    content = _clean(body.content, 500)
-    if not content:
-        raise HTTPException(400, "消息不能为空")
-    db.ex("UPDATE chat_messages SET content=?, edited=1, edited_by=? WHERE id=?", (content, u["id"], mid))
-    return {"ok": True}
-
-
-@router.delete("/chat/messages/{mid}")
-def delete_message(mid: int, request: Request):
-    u = require_user(request)
-    m = db.q1("SELECT * FROM chat_messages WHERE id=?", (mid,))
-    if not m:
-        raise HTTPException(404, "消息不存在")
-    if m["uid"] != u["id"] and u["role"] != "admin":
-        raise HTTPException(403, "只能删除自己的消息")
-    db.ex("UPDATE chat_messages SET deleted=1 WHERE id=?", (mid,))
-    return {"ok": True}
-
-
-@router.delete("/chat/rooms/{rid}")
-def delete_room(rid: int, request: Request):
-    u = require_user(request)
-    r = db.q1("SELECT * FROM chat_rooms WHERE id=?", (rid,))
-    if not r:
-        raise HTTPException(404, "群组不存在")
-    if u["role"] != "admin" and r["owner_id"] != u["id"]:
-        raise HTTPException(403, "只有管理员或群主可以解散群组")
-    db.ex("DELETE FROM chat_messages WHERE room_id=?", (rid,))
-    db.ex("DELETE FROM chat_members WHERE room_id=?", (rid,))
-    db.ex("DELETE FROM chat_rooms WHERE id=?", (rid,))
-    return {"ok": True}
+# v1.27: 聊天(群组/私聊/未读/已读回执/附件/回应/@/正在输入)已升级为独立模块 → server/routers/chat.py

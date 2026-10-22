@@ -108,6 +108,31 @@ tail -f install.log     # 或者看日志文件
 
 检测到本机**正在运行**的 OnlyOffice 容器时自动复用（保留你的配置）：自动读取 JWT 密钥（环境变量或 local.json）与端口、健康检查、设置开机自启、写好对接配置。`--ds-new` 强制用自带的 · `--ds-external` 强制复用（含已停止的）· `--ds-port N` / `--ds-secret X` 手动指定。未开启 JWT 的 DS 也能以无签名模式对接。
 
+### 🔄 在线更新：update.sh
+
+只更新代码、不动配置和数据（**推荐日常用这个**）：
+
+```bash
+cd /root/FLA            # 进入部署目录 (当初 install.sh 所在目录)
+sudo bash update.sh     # 备份数据库 → 拉取当前分支最新代码 → 重建容器 → 健康检查
+```
+
+常用变体：
+
+```bash
+sudo bash update.sh --branch arena/63f6f4b2-fla   # 指定要拉的分支
+sudo bash update.sh --no-pull                     # 不拉代码, 只用当前目录代码重建(手工覆盖文件后)
+sudo bash update.sh --no-backup                   # 跳过数据库备份
+sudo bash update.sh --full                        # 改成全量重装(等价 install.sh, 会重装网关/证书, 较慢)
+sudo bash update.sh -y                            # 不询问确认
+```
+
+- 备份落在 `backup/app-<时间戳>.db`（保留最近 10 份），日志写在 `update.log`
+- 数据库在 Docker 卷 `fla-data` 里，更新过程**从不会重建/删除该卷**，用户与课件不丢
+- `deploy/.env`（端口/域名/密钥）与 `deploy/.compose_*` 不会被覆盖
+- 若服务器不是 git 仓库，会自动改用 GitHub 归档包并保留上述本地配置；私有仓库请先配好 git 凭据或设置 `GITHUB_TOKEN`
+- 更新完前端一般自动生效；个别浏览器顽固缓存时按一次 **Ctrl+F5**
+
 ### 🛠 日常管理：run.sh
 
 ```bash
@@ -116,7 +141,7 @@ sudo bash run.sh start     # 启动
 sudo bash run.sh stop      # 停止(数据不丢)
 sudo bash run.sh restart   # 重启
 sudo bash run.sh logs      # 实时日志 (可指定 app|nginx|documentserver)
-sudo bash run.sh update    # 更新版本 = 智能重建, 数据保留
+sudo bash run.sh update    # 旧写法: 全量重装(等价 install.sh); 日常更新请用 update.sh
 sudo bash run.sh edge      # 宿主机 nginx 网关(80/443) → 转 edge.sh status
 sudo bash run.sh ssl       # 证书状态/到期时间 → 转 https.sh --status
 sudo bash run.sh screen    # 查看进行中的安装会话
@@ -260,6 +285,7 @@ FLA/
 ├── install.sh                 ← 一键部署/智能重建(含 nginx 网关 + SSL, 自动进 screen 保活)
 ├── edge.sh                    ← v1.27 宿主机 nginx 网关: 占 80+443 catch-all → 反代 FLA 端口
 ├── https.sh                   ← v1.27 SSL 证书: 文件验证(HTTP-01 webroot) + 自动续期
+├── update.sh                  ← 在线更新: 备份数据库 → 拉代码 → 重建容器 → 健康检查(仅更新, 不改配置)
 ├── run.sh                     ← 日常管理: status/start/stop/restart/logs/update/edge/ssl/doctor
 ├── completely_new_install.sh  ← v1.27 删掉所有容器 + Docker 本体, 再从零重装
 ├── uninstall.sh               ← 卸载(--images/--edge/--keep-data/--backup)
@@ -330,7 +356,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt httpx
 ## 五、运维备忘
 
 - 日志：`docker logs -f fla`；部署日志：`install.log`；网关日志：`/var/log/nginx/`；诊断包：`run.sh doctor`
-- 更新版本：覆盖文件后重新 `sudo bash install.sh`（或 `run.sh update`）
+- 更新版本：`sudo bash update.sh`（只更代码，配置/数据不动）；需要连网关证书一起重装用 `--full` 或 `sudo bash install.sh`
 - 备份：备份 Docker 卷 `fla-data`（`uninstall.sh --backup` 可自动打包）
 - 端口：默认 **8306**，`--port N` 修改；改了记得 `sudo bash edge.sh setup 域名` 让网关跟上
 - 域名/证书：`sudo bash https.sh 域名`（文件验证，不停服）· `sudo bash https.sh --status` 看到期时间 · 续期全自动（03:17 / 15:17）

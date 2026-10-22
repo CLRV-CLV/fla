@@ -32,6 +32,14 @@ def health():
     return {"ok": True, "service": "fla"}
 
 
+@app.get("/api/health/convert")
+def health_convert():
+    """转换能力自检: 前端/运维都能快速确认 LibreOffice、ffmpeg 是否就绪。"""
+    return {"libreoffice": converter.self_check(),
+            "ffmpeg": bool(converter.ffmpeg_bin()),
+            "timeout": converter.SOFFICE_TIMEOUT}
+
+
 app.include_router(auth.router)
 app.include_router(users.router)
 app.include_router(users.avatars)
@@ -81,6 +89,19 @@ def startup():
     stats.start()
     converter.start_worker()
     threading.Thread(target=converter.ensure_fonts, daemon=True).start()
+    # 转换能力自检 + 重启后把遗留的"转换中"任务重新排队(宝塔/Python 项目重启后不会卡死)
+    lo = converter.self_check()
+    if lo["ok"]:
+        print(f"[converter] LibreOffice 就绪: {lo.get('version') or lo['soffice']}")
+    else:
+        print(f"[converter] !! {lo['detail'] or 'LibreOffice 不可用'} —— Office 课件会显示「转换失败」")
+        print("[converter] !! 安装: Debian/Ubuntu: apt install libreoffice-impress libreoffice-writer libreoffice-calc")
+        print("[converter] !!       CentOS/RHEL:  yum/dnf install libreoffice-impress libreoffice-writer libreoffice-calc")
+        print("[converter] !! 宝塔一键:   bash bt.sh deps   (见 docs/宝塔部署.md)")
+    try:
+        converter.requeue_stuck()
+    except Exception as e:
+        print("[converter] requeue stuck fail:", e)
 
 
 # 前端静态资源 (SPA, hash 路由)

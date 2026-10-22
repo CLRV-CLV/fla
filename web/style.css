@@ -852,6 +852,28 @@ label {
 }
 .fd-row span { color: var(--mut); }
 .fd-row b { color: var(--ink); }
+.fd-error {
+  margin-top: 16px;
+  padding: 13px 14px;
+  border: 1px solid #fecaca;
+  background: #fef2f2;
+  border-radius: var(--radius-md);
+  font-size: 12.5px;
+  line-height: 1.7;
+}
+.fd-error-t { font-weight: 700; color: #b91c1c; margin-bottom: 6px; }
+.fd-error-msg {
+  color: #7f1d1d;
+  word-break: break-word;
+  max-height: 132px;
+  overflow: auto;
+  white-space: pre-wrap;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+}
+.fd-error-acts { display: flex; gap: 8px; margin-top: 10px; flex-wrap: wrap; }
+.fd-error-tip { margin-top: 10px; color: #9a3412; opacity: .9; }
+.fd-error-tip code { background: rgba(0,0,0,.06); padding: 1px 5px; border-radius: 4px; }
 .fd-qr-box {
   margin-top: 20px;
   padding: 16px;

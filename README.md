@@ -357,6 +357,7 @@ python3 -m venv .venv && ./.venv/bin/pip install -r requirements.txt httpx
 
 - 日志：`docker logs -f fla`；部署日志：`install.log`；网关日志：`/var/log/nginx/`；诊断包：`run.sh doctor`
 - 更新版本：`sudo bash update.sh`（只更代码，配置/数据不动）；需要连网关证书一起重装用 `--full` 或 `sudo bash install.sh`
+- PPT 显示「转换失败」：`bash bt.sh doctor`（宝塔）/ `curl localhost:8306/api/health/convert` 自查；课件详情里能看到真实原因
 - 备份：备份 Docker 卷 `fla-data`（`uninstall.sh --backup` 可自动打包）
 - 端口：默认 **8306**，`--port N` 修改；改了记得 `sudo bash edge.sh setup 域名` 让网关跟上
 - 域名/证书：`sudo bash https.sh 域名`（文件验证，不停服）· `sudo bash https.sh --status` 看到期时间 · 续期全自动（03:17 / 15:17）

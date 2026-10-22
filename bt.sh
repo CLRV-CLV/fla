@@ -3,6 +3,7 @@
 #   首次安装:  bash bt.sh install          (装系统依赖 + Python 虚拟环境 + 开机自启服务)
 #   更新代码:  bash bt.sh pull [分支]       (默认 arena/63f6f4b2-fla, 更新后自动重启; 也可 FLA_BRANCH=xxx bash bt.sh pull)
 #   宝塔Python项目模式: bash bt.sh deps (只装系统依赖) ; bash bt.sh pull (只更新代码, 然后在宝塔点重启)
+#   自检:      bash bt.sh doctor        (检查 LibreOffice/ffmpeg/字体/权限, 并实测一次转换)
 #   其它:      bash bt.sh start|stop|restart|status|logs|passwd 新密码
 # 进程由 systemd 守护 (fla.service, 崩溃自动重启/开机自启); 宝塔负责 Nginx 反代、SSL、防火墙。
 set -u
@@ -51,6 +52,29 @@ pkg_install() {
     echo "  ! 未识别的系统, 请手动安装: libreoffice ffmpeg 中文字体 python3"
   fi
   fc-cache -f >/dev/null 2>&1 || true
+  ensure_libreoffice
+}
+
+ensure_libreoffice() {
+  command -v soffice >/dev/null 2>&1 && { echo "  ✔ LibreOffice: $(soffice --version 2>/dev/null | head -1)"; return 0; }
+  command -v libreoffice >/dev/null 2>&1 && return 0
+  echo "  ! 未找到 soffice, 尝试补装 LibreOffice ..."
+  if command -v apt-get >/dev/null 2>&1; then
+    apt-get install -y --no-install-recommends libreoffice-nogui libreoffice-impress libreoffice-writer libreoffice-calc >/dev/null 2>&1 || \
+      apt-get install -y --no-install-recommends libreoffice-impress libreoffice-writer libreoffice-calc >/dev/null 2>&1 || true
+  elif command -v dnf >/dev/null 2>&1 || command -v yum >/dev/null 2>&1; then
+    Y=$(command -v dnf || command -v yum)
+    $Y install -y libreoffice-impress libreoffice-writer libreoffice-calc >/dev/null 2>&1 || \
+      $Y install -y libreoffice >/dev/null 2>&1 || true
+  fi
+  if command -v soffice >/dev/null 2>&1; then
+    echo "  ✔ LibreOffice 已补装: $(soffice --version 2>/dev/null | head -1)"
+  else
+    echo "  ✘ LibreOffice 仍不可用 —— Office 课件会显示「转换失败」"
+    echo "     Debian/Ubuntu: apt install -y libreoffice-impress libreoffice-writer libreoffice-calc"
+    echo "     CentOS/RHEL:   yum install -y libreoffice-impress libreoffice-writer libreoffice-calc"
+    echo "     装好后执行: bash bt.sh doctor"
+  fi
 }
 
 write_service() {
@@ -206,6 +230,68 @@ case "${1:-status}" in
   _after_pull)
     after_pull
     ;;
+  doctor)
+    DOC=$(getenv FLA_DATA_DIR); DOC=${DOC:-$DIR/data}
+    echo "===== FLA 自检 $(date '+%F %T') ====="
+    echo "部署目录 : $DIR"
+    echo "数据目录 : $DOC"
+    echo "端口     : $PORT   (RTMP $RTMP)"
+    PY_BIN="$VENV/bin/python"; [ -x "$PY_BIN" ] || PY_BIN=$(command -v python3)
+    if [ -n "$PY_BIN" ]; then echo "Python   : $("$PY_BIN" -V 2>&1)  $PY_BIN"; else echo "Python   : ✘ 未找到"; fi
+    echo ""
+    echo "-- 依赖 --"
+    if command -v soffice >/dev/null 2>&1 || command -v libreoffice >/dev/null 2>&1; then
+      SOF=$(command -v soffice || command -v libreoffice)
+      echo "LibreOffice: ✔ $SOF  $("$SOF" --version 2>/dev/null | head -1)"
+    else
+      echo "LibreOffice: ✘ 未安装 → Office/PPT 课件必然「转换失败」"
+      echo "             装: apt install -y libreoffice-impress libreoffice-writer libreoffice-calc"
+      echo "                 yum install -y libreoffice-impress libreoffice-writer libreoffice-calc"
+    fi
+    if command -v ffmpeg >/dev/null 2>&1; then echo "ffmpeg     : ✔ $(ffmpeg -version 2>/dev/null | head -1)"; else echo "ffmpeg     : ✘ 未安装 (视频转码/iPhone投屏)"; fi
+    echo "中文字体   : $( { fc-list :lang=zh 2>/dev/null | wc -l; } ) 个"
+    echo ""
+    echo "-- 权限 --"
+    for D in "$DOC" "$DOC/uploads" "$DOC/converted"; do
+      if mkdir -p "$D" 2>/dev/null && touch "$D/.wtest" 2>/dev/null; then rm -f "$D/.wtest"; echo "可写: ✔ $D"; else echo "可写: ✘ $D (chown -R www:www $DOC)"; fi
+    done
+    echo ""
+    echo "-- 服务 --"
+    ST=$(systemctl is-active "$SVC" 2>/dev/null); [ "$ST" = "active" ] && echo "systemd $SVC: ✔ 运行中" || echo "systemd $SVC: ${ST:-未安装} (宝塔 Python 项目模式下正常)"
+    curl -s -m 5 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && echo "健康检查   : ✔ http://127.0.0.1:$PORT/api/health" || echo "健康检查   : ✘ 应用未响应"
+    echo -n "转换自检   : "; curl -s -m 20 "http://127.0.0.1:$PORT/api/health/convert" || echo "(接口不可用, 可能版本较旧)"
+    echo ""
+    echo "-- 实测一次转换 (txt → pdf) --"
+    if command -v soffice >/dev/null 2>&1 || command -v libreoffice >/dev/null 2>&1; then
+      SOF=$(command -v soffice || command -v libreoffice)
+      T=$(mktemp -d); printf 'FLA 转换自检\n中文测试\n' > "$T/probe.txt"
+      HOME="${HOME:-/tmp}" timeout 180 "$SOF" --headless --norestore --nologo --nolockcheck \
+        "-env:UserInstallation=file://$T/lo_profile" --convert-to pdf --outdir "$T" "$T/probe.txt" >"$T/out.log" 2>&1
+      if [ -s "$T/probe.pdf" ]; then
+        echo "✔ 转换成功 ($(du -h "$T/probe.pdf" | cut -f1)) —— LibreOffice 工作正常"
+      else
+        echo "✘ 转换失败, 输出如下(把它发给开发者):"
+        tail -20 "$T/out.log" | sed 's/^/    /'
+        echo "  常见原因: 家目录不可写 → 给 $DOC 与 /tmp 写权限; 缺少依赖库 → apt -f install"
+      fi
+      rm -rf "$T"
+    else
+      echo "跳过 (没有 LibreOffice)"
+    fi
+    echo ""
+    echo "-- 最近转换失败的文件(最多 5 个) --"
+    if [ -f "$DOC/app.db" ]; then
+      "$PY_BIN" - "$DOC" <<'PYEOF' 2>/dev/null || echo "(读取数据库失败, 可忽略)"
+import sqlite3, sys, os
+con = sqlite3.connect(os.path.join(sys.argv[1], "app.db"))
+for name, err in con.execute("SELECT orig_name, error FROM files WHERE status='failed' ORDER BY id DESC LIMIT 5"):
+    print("  ·", name, "->", (err or "无原因")[:220])
+PYEOF
+    else
+      echo "  (未找到数据库: $DOC/app.db)"
+    fi
+    echo "======================================"
+    ;;
   start|stop|restart) systemctl "$1" $SVC; [ "$1" = stop ] || health ;;
   status) systemctl status $SVC --no-pager -l | head -15; curl -s "http://127.0.0.1:$PORT/api/version"; echo ;;
   logs) journalctl -u $SVC -n 200 --no-pager ;;
@@ -214,5 +300,5 @@ case "${1:-status}" in
     D=$(getenv FLA_DATA_DIR); D=${D:-$DIR/data}
     "$VENV/bin/python" -c "import sqlite3,bcrypt,sys;c=sqlite3.connect(sys.argv[1]+'/fla.db');c.execute('UPDATE users SET password_hash=? WHERE username=\"admin\"',(bcrypt.hashpw(sys.argv[2].encode(),bcrypt.gensalt()).decode(),));c.commit();print('✔ admin 密码已重置')" "$D" "$2"
     ;;
-  *) echo "用法: bash bt.sh {install|pull|start|stop|restart|status|logs|passwd 新密码}" ;;
+  *) echo "用法: bash bt.sh {install|deps|pull|doctor|start|stop|restart|status|logs|passwd 新密码}" ;;
 esac

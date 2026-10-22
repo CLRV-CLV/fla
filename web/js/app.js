@@ -740,7 +740,9 @@ function kindBadge(f) {
 
 function cardHTML(f) {
   const st = f.status === 'converting' ? '<span class="st converting">转换中…</span>'
-    : f.status === 'failed' ? '<span class="st failed">转换失败</span>' : '';
+    : f.status === 'failed'
+      ? '<span class="st failed" title="' + UI.esc(f.error || '点击「详情」查看失败原因') + '">转换失败</span>'
+      : '';
   const isOffice = f.kind === 'office';
   const isSel = App.selectedFids.has(f.id);
 
@@ -963,7 +965,24 @@ function openFileDrawer(f) {
       '<div class="fd-row"><span>文件类型</span><b>' + (ext || f.kind).toUpperCase() + '</b></div>' +
       '<div class="fd-row"><span>文件体积</span><b>' + (f.kind === 'board' ? '无限画布' : UI.fmtSize(f.size)) + '</b></div>' +
       '<div class="fd-row"><span>幻灯页数</span><b>' + (f.pages ? f.pages + ' 页' : '—') + '</b></div>' +
+      '<div class="fd-row"><span>转换状态</span><b>' +
+        (f.status === 'ready' ? '正常' : f.status === 'converting' ? '转换中…' : '失败') + '</b></div>' +
       '<div class="fd-row"><span>上传日期</span><b>' + UI.fmtDate(f.created_at) + '</b></div>' +
+      (f.status === 'failed'
+        ? '<div class="fd-error">' +
+            '<div class="fd-error-t">转换失败原因</div>' +
+            '<div class="fd-error-msg">' + UI.esc(f.error || '服务器没有返回原因，可能缺少 LibreOffice 或文件已损坏') + '</div>' +
+            '<div class="fd-error-acts">' +
+              '<button class="btn sm primary" id="fd-act-retry">' + UI.icon('refresh', 14) + ' 重试转换</button>' +
+              '<button class="btn sm ghost" id="fd-act-copy-err">复制原因</button>' +
+            '</div>' +
+            '<div class="fd-error-tip">常见原因：服务器未装 LibreOffice；文件加密/损坏；课件过大超时。' +
+              '可在服务器执行 <code>bash bt.sh doctor</code> 自检。</div>' +
+          '</div>' : '') +
+      (f.status === 'converting'
+        ? '<div class="fd-error" style="background:#fffbeb;border-color:#fde68a;">' +
+            '<div class="fd-error-msg" style="color:#92400e;">正在后台转换，通常需要几秒到几十秒；' +
+            '大课件或首次转换可能更久，页面会自动刷新状态。</div></div>' : '') +
       '<div style="display:flex;flex-direction:column;gap:10px;margin-top:20px;">' +
         '<button class="btn primary" id="fd-act-present">' + UI.icon('play', 15) + ' 全屏互动放映</button>' +
         (isOffice ? '<button class="btn" id="fd-act-open">' + UI.icon('eye', 15) + ' 在线纯净预览</button>' : '') +
@@ -981,6 +1000,12 @@ function openFileDrawer(f) {
   $('#fd-close').onclick = closeFileDrawer;
   $('#fd-rename-btn').onclick = () => renameFile(f);
   $('#fd-act-present').onclick = () => handleFileAction('present', f);
+  const retryBtn = $('#fd-act-retry');
+  if (retryBtn) retryBtn.onclick = () => handleFileAction('retry', f);
+  const copyErrBtn = $('#fd-act-copy-err');
+  if (copyErrBtn) copyErrBtn.onclick = () => {
+    copyText(f.error || '（无原因）').then(() => toast('失败原因已复制', 'ok')).catch(() => {});
+  };
   if ($('#fd-act-open')) $('#fd-act-open').onclick = () => handleFileAction('open', f);
   if ($('#fd-act-local')) $('#fd-act-local').onclick = () => handleFileAction('local', f);
   if ($('#fd-act-link')) $('#fd-act-link').onclick = () => handleFileAction('link', f);
@@ -1038,7 +1063,9 @@ async function handleFileAction(a, f) {
     renameFile(f);
   }
   if (a === 'retry') {
-    API.post('/api/files/' + f.id + '/retry').then(() => { toast('已重新开始转换', 'ok'); refreshList(); }).catch(err => toast(err.message, 'err'));
+    API.post('/api/files/' + f.id + '/retry')
+      .then(() => { toast('已重新开始转换，稍等几秒后刷新', 'ok'); closeFileDrawer(); refreshList(); })
+      .catch(err => toast(err.message, 'err'));
   }
   if (a === 'del') {
     const ok = await UI.confirm('确定删除《' + UI.esc(f.name) + '》？删除后无法恢复');

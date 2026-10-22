@@ -261,7 +261,7 @@ def test_web_static_assets_serve():
     resp_index = client.get("/")
     assert resp_index.status_code == 200
     assert "FLA" in resp_index.text
-    assert "js/app.js?v=158" in resp_index.text
+    assert "js/app.js?v=159" in resp_index.text
     assert "js/api.js?v=136" in resp_index.text
 
     resp_css = client.get("/style.css")
@@ -317,3 +317,44 @@ def test_library_file_list_not_shadowed():
     # ai.js 不得再声明裸的 refreshList / view, 否则会覆盖课件库与后台的同名函数
     assert "function refreshList(" not in ai_js
     assert "function view(" not in ai_js
+
+
+# ---------------------------------------------------------------- 转换失败可诊断 ---
+def test_convert_selfcheck_endpoint():
+    r = client.get("/api/health/convert")
+    assert r.status_code == 200
+    d = r.json()
+    assert set(d) >= {"libreoffice", "ffmpeg", "timeout"}
+    assert isinstance(d["libreoffice"]["ok"], bool)
+    assert d["libreoffice"]["detail"]          # 不可用时也要有可读原因
+
+
+def test_converter_error_messages_are_actionable():
+    from server import converter
+
+    class R:
+        def __init__(self, stderr="", code=1):
+            self.stderr = stderr
+            self.stdout = ""
+            self.returncode = code
+
+    cases = {
+        "no such file": "LibreOffice",
+        "Error: source file could not be loaded": "损坏",
+        "Permission denied": "权限",
+        "conversion timed out after 900s": "超时",
+    }
+    for stderr, want in cases.items():
+        msg = converter.lo_error(R(stderr))
+        assert want in msg, (stderr, msg)
+        assert "退出码" in msg
+    # 完全无输出时也要给出可读文字, 不能是空串
+    assert converter.lo_error(R("")).strip()
+
+
+def test_library_shows_convert_error():
+    app_js = (REPO_ROOT / "web" / "js" / "app.js").read_text(encoding="utf-8")
+    # 失败原因必须能展示给用户(角标 tooltip + 详情抽屉 + 重试按钮)
+    assert "f.error" in app_js
+    assert "fd-error" in app_js
+    assert "fd-act-retry" in app_js

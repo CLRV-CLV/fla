@@ -1,5 +1,6 @@
 """FLA - 文档转换服务: LibreOffice headless -> PDF + 字体检测/自动补齐"""
 import json
+import os
 import queue
 import re
 import shutil
@@ -27,6 +28,121 @@ VIDEO_EXTS = WEB_VIDEO | TRANSCODABLE
 
 _jobs = queue.Queue()
 _started = False
+
+# LibreOffice 转换超时(秒): 大课件/图片多时 420s 容易不够, 可用 FLA_SOFFICE_TIMEOUT 调整
+SOFFICE_TIMEOUT = int(os.environ.get("FLA_SOFFICE_TIMEOUT", "900"))
+
+
+def lo_env():
+    """LibreOffice 的进程环境.
+
+    宝塔(Python 项目, 进程属主 www)/精简容器里 HOME 可能不存在或不可写,
+    soffice 会直接失败 (Failed to create "home" / javaldx 报错)。
+    这里统一给一个可写的 HOME + 环境, 让 headless 转换在任何部署方式下都能跑。
+    """
+    env = os.environ.copy()
+    home = Path(env.get("HOME") or "/tmp")
+    try:
+        home.mkdir(parents=True, exist_ok=True)
+        probe = home / ".fla_write_test"
+        probe.write_text("1")
+        probe.unlink()
+    except Exception:
+        home = Path("/tmp/fla-lohome")     # HOME 不可写 → 退到 /tmp
+        try:
+            home.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            pass
+    env["HOME"] = str(home)
+    env.setdefault("LANG", "C.UTF-8")
+    env["SAL_USE_VCLPLUGIN"] = "svp"        # 无显示器环境必需
+    env["SAL_DISABLE_OPENCL"] = "1"
+    env.pop("SAL_USE_VCLPLUGIN_DEFAULT", None)
+    return env
+
+
+def lo_error(r, extra: str = "") -> str:
+    """把 soffice 的输出翻译成能看懂、能照做的中文错误(保留原始后半段方便排查)。"""
+    out = ((getattr(r, "stderr", "") or "") + "\n" + (getattr(r, "stdout", "") or "")).strip()
+    low = out.lower()
+    code = getattr(r, "returncode", "?")
+    hint = ""
+    if any(k in low for k in ("no such file", "not found", "command not found")):
+        hint = "服务器缺少 LibreOffice(or 找不到 soffice 命令)"
+    elif "permission denied" in low or "failed to create" in low and "home" in low:
+        hint = "LibreOffice 无法写入用户配置目录(权限/家目录问题)"
+    elif any(k in low for k in ("could not be loaded", "general input/output error",
+                                "no export filter", "input error", "corrupt",
+                                "format error", "source file could not be loaded")):
+        hint = "文件已损坏或格式不被支持(可用 PowerPoint/WPS 打开后另存为 .pptx 重试)"
+    elif any(k in low for k in ("password", "encrypted")):
+        hint = "文档有密码保护, 请先取消密码再上传"
+    elif "timed out" in low:
+        hint = "转换超时(课件过大或图片过多)"
+    else:
+        hint = "LibreOffice 转换失败"
+    tail = out[-600:].strip()
+    msg = f"{hint} (退出码 {code})"
+    if extra:
+        msg = f"{extra}: " + msg
+    if tail:
+        msg += " | " + tail
+    return msg[:800]
+
+
+def _run_lo(args, timeout=None):
+    """执行 soffice, 统一环境与超时; 超时也转成 CompletedProcess 便于统一报错。"""
+    timeout = timeout or SOFFICE_TIMEOUT
+    try:
+        return subprocess.run([soffice_bin()] + args, capture_output=True, text=True,
+                              timeout=timeout, env=lo_env())
+    except subprocess.TimeoutExpired as e:
+        class _R:
+            returncode = "timeout"
+            stdout = (e.stdout or b"").decode("utf-8", "ignore") if isinstance(e.stdout, bytes) else (e.stdout or "")
+            stderr = (e.stderr or b"").decode("utf-8", "ignore") if isinstance(e.stderr, bytes) else (e.stderr or "")
+        _R.stderr += f"\ntimed out after {timeout}s"
+        return _R()
+    except FileNotFoundError:
+        class _R:
+            returncode = 127
+            stdout = ""
+            stderr = "soffice: no such file or directory"
+        return _R()
+
+
+def self_check() -> dict:
+    """启动自检: LibreOffice 是否可用(结果打印到日志, 也供 bt.sh doctor 参考)。"""
+    b = soffice_bin()
+    info = {"soffice": b or "", "timeout": SOFFICE_TIMEOUT, "ok": False, "detail": ""}
+    if not b:
+        info["detail"] = "未找到 soffice/libreoffice, Office 课件将无法转换"
+        return info
+    try:
+        r = subprocess.run([b, "--version"], capture_output=True, text=True, timeout=30, env=lo_env())
+        info["version"] = (r.stdout or r.stderr or "").strip().splitlines()[0] if (r.stdout or r.stderr) else ""
+        info["ok"] = r.returncode == 0
+        info["detail"] = info.get("version", "")
+    except Exception as e:
+        info["detail"] = str(e)[:200]
+    return info
+
+
+def requeue_stuck():
+    """启动时把上个进程遗留在「转换中」的任务重新排队.
+
+    宝塔/Python 项目模式重启进程时, 正在转的课件会永远卡在「转换中…」,
+    这里统一重新入队, 避免用户只能手动点重试。
+    """
+    try:
+        rows = db.q("SELECT id FROM files WHERE status='converting' ORDER BY id")
+    except Exception:
+        return 0
+    for r in rows:
+        enqueue(r["id"])
+    if rows:
+        print(f"[converter] 重启后重新排队 {len(rows)} 个未完成的转换任务")
+    return len(rows)
 
 
 def start_worker():
@@ -104,7 +220,7 @@ def _convert(fid):
         old.unlink()
     try:
         if not soffice_bin():
-            raise RuntimeError("服务器未安装 LibreOffice, 无法转换 Office 文档")
+            raise RuntimeError("服务器未安装 LibreOffice(soffice), 无法转换 Office 课件。宝塔用户请执行: bash bt.sh deps  或  apt/yum install libreoffice-impress")
         if row["ext"] in WPS_NATIVE:
             raise RuntimeError("WPS 专有格式(.wps/.et/.dps)暂无法自动转换, 请在 WPS 中另存为 docx/xlsx/pptx 后重新上传")
         missing = detect_missing_fonts(src, row["ext"])
@@ -125,10 +241,9 @@ def _convert(fid):
             try:
                 from . import omml_img
                 tmpx = outdir / "_src_conv.pptx"
-                r0 = subprocess.run([soffice_bin(), "--headless", "--norestore", "--nologo",
-                                     "--nolockcheck", "-env:UserInstallation=file:///tmp/lo_anim",
-                                     "--convert-to", "pptx", "--outdir", str(outdir), str(src)],
-                                     capture_output=True, text=True, timeout=300)
+                r0 = _run_lo(["--headless", "--norestore", "--nologo", "--nolockcheck",
+                              "-env:UserInstallation=file:///tmp/lo_anim",
+                              "--convert-to", "pptx", "--outdir", str(outdir), str(src)], timeout=300)
                 cand = outdir / (src.stem + ".pptx")
                 if r0.returncode == 0 and cand.exists():
                     cand.rename(tmpx)
@@ -141,15 +256,22 @@ def _convert(fid):
                     tmpx.unlink()
             except Exception as e:
                 print("[converter] legacy omml preprocess fail:", fid, e)
-        profile = f"-env:UserInstallation=file:///tmp/lo_profile_{fid}"
-        cmd = [soffice_bin(), "--headless", "--norestore", "--nologo", "--nolockcheck",
-               profile, "--convert-to", "pdf", "--outdir", str(outdir), str(work)]
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=420)
-        pdf = outdir / (work.stem + ".pdf")
-        if not pdf.exists() and work is not src:
-            pdf = outdir / (src.stem + ".pdf")  # 兜底: 原名输出
-        if r.returncode != 0 or not pdf.exists():
-            raise RuntimeError((r.stderr or r.stdout or "转换失败")[-300:])
+        r = None
+        for attempt in (1, 2):
+            profile = f"-env:UserInstallation=file:///tmp/lo_profile_{fid}_{attempt}"
+            r = _run_lo(["--headless", "--norestore", "--nologo", "--nolockcheck",
+                         profile, "--convert-to", "pdf", "--outdir", str(outdir), str(work)])
+            pdf = outdir / (work.stem + ".pdf")
+            if not pdf.exists() and work is not src:
+                pdf = outdir / (src.stem + ".pdf")  # 兜底: 原名输出
+            if r.returncode == 0 and pdf.exists() and pdf.stat().st_size > 0:
+                break
+            # 第一次失败常见于首次初始化用户配置/残留锁, 换个干净 profile 再试一次
+            print(f"[converter] file {fid} convert attempt {attempt} failed: \n{(r.stderr or r.stdout or '')[-800:]}")
+            if not soffice_bin():
+                break
+        if r is None or r.returncode != 0 or not pdf.exists() or pdf.stat().st_size == 0:
+            raise RuntimeError(lo_error(r))
         pages = _pdf_pages(pdf)
         print(f"[converter] file {fid} -> pdf ok, {pages} pages")
         # v1.12: PPT 家族提取放映动画清单(失败不影响主流程)

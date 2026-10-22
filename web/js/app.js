@@ -577,7 +577,7 @@ async function viewLibrary() {
   bindLogout();
   refreshMe();
   bindLibraryToolbarEvents();
-  await refreshList();
+  await loadLibraryFiles();
 
   $('#newboard').onclick = async () => {
     try {
@@ -1095,6 +1095,15 @@ function copyText(t) {
   });
 }
 
+/* 列表是否还停留在最初那个「加载中…」占位符 (说明一次都没渲染成功) */
+function fileListIsPlaceholder() {
+  const container = $('#files-container');
+  if (!container) return false;
+  const first = container.firstElementChild;
+  if (!first || !first.classList.contains('empty')) return false;
+  return /加载中/.test(first.textContent || '');
+}
+
 function showFileListLoadError(error) {
   const container = $('#files-container');
   if (!container) return;
@@ -1104,8 +1113,8 @@ function showFileListLoadError(error) {
     '<button class="btn sm primary" id="file-list-retry">重新加载</button></div>';
   const retry = $('#file-list-retry', container);
   if (retry) retry.onclick = () => {
-    container.innerHTML = '<div class="files-grid"><div class="empty">加载中…</div></div>';
-    refreshList();
+    container.innerHTML = '<div class="files-grid" id="grid"><div class="empty">加载中…</div></div>';
+    loadLibraryFiles();
   };
 }
 
@@ -1116,13 +1125,29 @@ async function requestFileList() {
   return files;
 }
 
+/* 课件库入口加载: 先走常规 refreshList; 若列表仍停在占位符(接口没被触发/异常被吞),
+   再直接请求一次接口, 绝不让页面无限停在「加载中…」 */
+async function loadLibraryFiles() {
+  try { await refreshList(); } catch (e) { /* 下面统一兜底 */ }
+  if (!fileListIsPlaceholder()) return true;
+  try {
+    App.files = await requestFileList();
+    applyFiltersAndSort();
+    return true;
+  } catch (e) {
+    showFileListLoadError(e);
+    return false;
+  }
+}
+
 async function refreshList() {
   let files;
   try {
     files = await requestFileList();
   } catch (e) {
-    // 首次加载失败必须显示错误与重试入口；已有数据时保留列表，避免短暂断线清空页面。
-    if (!App.files.length) showFileListLoadError(e);
+    // 首次加载失败(且页面还没渲染出任何列表)必须显示错误与重试入口；
+    // 已有数据时保留列表，避免短暂断线清空页面。
+    if (!App.files.length || fileListIsPlaceholder()) showFileListLoadError(e);
     else UI.toast('文件列表暂时无法更新：' + (e.message || '网络错误'), 'err');
     return false;
   }

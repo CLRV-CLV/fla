@@ -261,7 +261,7 @@ def test_web_static_assets_serve():
     resp_index = client.get("/")
     assert resp_index.status_code == 200
     assert "FLA" in resp_index.text
-    assert "js/app.js?v=157" in resp_index.text
+    assert "js/app.js?v=158" in resp_index.text
     assert "js/api.js?v=136" in resp_index.text
 
     resp_css = client.get("/style.css")
@@ -273,3 +273,47 @@ def test_web_static_assets_serve():
     assert resp_js.status_code == 200
     assert "viewDesktopCenter" in resp_js.text
 
+
+
+# ---------------------------------------------------------------- 前端全局命名冲突 ---
+# web/js/*.js 全部以「经典 <script>」加载到同一个全局作用域: 函数/变量重名会互相覆盖。
+# 曾经 ai.js 的 refreshList() 覆盖了 app.js 的同名函数, 导致课件库永远停在「加载中…」。
+def _top_level_declarations(src: str):
+    import re
+    s = re.sub(r"/\*.*?\*/", "", src, flags=re.S)
+    s = re.sub(r"//[^\n]*", "", s)
+    s = re.sub(r"'(?:\\.|[^'\\])*'|\"(?:\\.|[^\"\\])*\"|`(?:\\.|[^`\\])*`", '""', s)
+    names, depth = set(), 0
+    for line in s.splitlines():
+        if depth == 0:
+            stripped = line.strip()
+            m = re.match(r"(?:async\s+)?function\s+([A-Za-z_$][\w$]*)", stripped)
+            if m:
+                names.add(m.group(1))
+            m = re.match(r"(?:const|let|var)\s+([A-Za-z_$][\w$]*)", stripped)
+            if m:
+                names.add(m.group(1))
+        depth = max(0, depth + line.count("{") - line.count("}"))
+    return names
+
+
+def test_web_js_no_global_name_collision():
+    web_js = REPO_ROOT / "web" / "js"
+    owners = {}
+    for f in sorted(web_js.glob("*.js")):
+        if f.name.endswith(".min.js"):
+            continue
+        for name in _top_level_declarations(f.read_text(encoding="utf-8")):
+            owners.setdefault(name, []).append(f.name)
+    dup = {k: v for k, v in owners.items() if len(v) > 1}
+    assert dup == {}, f"这些全局名在多个脚本里重复声明, 会互相覆盖: {dup}"
+
+
+def test_library_file_list_not_shadowed():
+    app_js = (REPO_ROOT / "web" / "js" / "app.js").read_text(encoding="utf-8")
+    ai_js = (REPO_ROOT / "web" / "js" / "ai.js").read_text(encoding="utf-8")
+    assert "async function refreshList()" in app_js
+    assert "async function loadLibraryFiles()" in app_js
+    # ai.js 不得再声明裸的 refreshList / view, 否则会覆盖课件库与后台的同名函数
+    assert "function refreshList(" not in ai_js
+    assert "function view(" not in ai_js

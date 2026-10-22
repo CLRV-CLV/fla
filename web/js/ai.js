@@ -1,7 +1,10 @@
 /* FLA v3.6 - AI 助手: 多轮对话(流式) / 扩写缩写转写润色翻译 / AI 论坛回复 */
 'use strict';
 
-window.AI = { view, attach, draftModal, forumReply, models: loadModels };
+/* 注意: 本文件与 app.js / admin.js 共享同一个全局作用域(经典 <script>),
+   函数名必须唯一 —— 曾因 refreshList / view 与 app.js、admin.js 重名互相覆盖,
+   导致课件库永远停在「加载中」. 故统一加 ai 前缀. */
+window.AI = { view: aiView, attach, draftModal, forumReply, models: loadModels };
 
 const $a = (s, el) => (el || document).querySelector(s);
 const $$a = (s, el) => Array.from((el || document).querySelectorAll(s));
@@ -99,7 +102,7 @@ function md(text) {
 /* ================================================================
  *  1. AI 对话页 (#/ai)
  * ================================================================ */
-async function view() {
+async function aiView() {
   document.title = 'AI 助手 - FLA';
   S = { convs: [], cur: null, msgs: [], models: [], modelId: 0, busy: false, ctrl: null, enabled: true, onlineSearch: false };
   $('#app').innerHTML = shell(
@@ -159,11 +162,11 @@ async function view() {
       if (S.cur) API.patch('/api/ai/conversations/' + S.cur.id, { model_id: S.modelId }).catch(err => toast(err.message, 'err'));
     };
   }
-  await refreshList();
+  await aiRefreshList();
   if (S.convs.length) openConv(S.convs[0].id); else renderMsgs();
 }
 
-async function refreshList() {
+async function aiRefreshList() {
   if (!S) return;
   try { S.convs = (await API.get('/api/ai/conversations')).items; } catch (e) { toast(e.message, 'err'); }
   const box = $a('#ai-list');
@@ -184,7 +187,7 @@ async function refreshList() {
     try {
       await API.del('/api/ai/conversations/' + b.dataset.del);
       if (S.cur && S.cur.id === +b.dataset.del) { S.cur = null; S.msgs = []; renderMsgs(); }
-      refreshList();
+      aiRefreshList();
     } catch (err) { toast(err.message, 'err'); }
   });
 }
@@ -194,7 +197,7 @@ async function newConv() {
   try {
     const c = await API.post('/api/ai/conversations', { model_id: S.modelId || null });
     S.cur = c; S.msgs = [];
-    await refreshList();
+    await aiRefreshList();
     renderMsgs();
     $a('#ai-inp').focus();
   } catch (e) { toast(e.message, 'err'); }
@@ -208,7 +211,7 @@ async function openConv(id) {
     if (c.model_id && S.models.some(m => m.id === c.model_id)) {
       S.modelId = c.model_id; $a('#ai-model').value = c.model_id;
     }
-    await refreshList();
+    await aiRefreshList();
     renderMsgs();
   } catch (e) { toast(e.message, 'err'); }
 }
@@ -319,7 +322,7 @@ async function send(regen) {
     setBusy(false);
     if (!pending.content) S.msgs = S.msgs.filter(m => m !== pending);
     renderMsgs();
-    refreshList();
+    aiRefreshList();
   }
 }
 

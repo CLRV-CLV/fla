@@ -1,11 +1,12 @@
 /* FLA - 管理后台 */
 'use strict';
 
-window.Admin = { view };
+/* 函数名与 ai.js/app.js 共享全局作用域, 必须唯一 (见 ai.js 顶部说明) */
+window.Admin = { view: adminView };
 let sec = 'overview';
 let userSearchTimer = null;
 
-function view() {
+function adminView() {
   document.title = '管理后台 - FLA';
   $('#app').innerHTML =
     '<div class="adm">' +

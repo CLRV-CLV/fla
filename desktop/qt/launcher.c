@@ -8,15 +8,79 @@
 #include <wchar.h>
 
 #ifndef FLA_VERSION
-#define FLA_VERSION L"3.5.6"
+#define FLA_VERSION L"3.6.0"
 #endif
 
 static wchar_t g_self[MAX_PATH], g_rt[MAX_PATH], g_err[512];
+static const wchar_t* ArgsAfterExe(const wchar_t* cl);
 static unsigned long long g_off, g_size;
 
 static void Fail(const wchar_t* msg) {
     MessageBoxW(NULL, msg, L"FLA 课堂助手", MB_OK | MB_ICONERROR);
     ExitProcess(1);
+}
+
+
+/* ---------------------------------------------------------------- 单实例
+ * 双击多次时只允许一个 FLA 进程: 后来者把参数交给已运行的实例 (命名事件唤醒) 后静默退出。
+ * 用命名互斥体而不是 "端口占用" 判断: 进程崩溃/被强杀时内核自动释放, 不会卡死在 "打不开" 状态。
+ * 互斥体/事件名必须与 fla_qt/single.py 保持一致。 */
+#define FLA_MUTEX_NAME L"Local\\FLA.SingleInstance.v1"
+#define FLA_EVENT_NAME L"Local\\FLA.WakeEvent.v1"
+
+static void PendingPath(wchar_t* out) {
+    wchar_t lad[MAX_PATH];
+    if (!GetEnvironmentVariableW(L"LOCALAPPDATA", lad, MAX_PATH)) GetTempPathW(MAX_PATH, lad);
+    _snwprintf(out, MAX_PATH, L"%s\\FLA", lad);
+    CreateDirectoryW(out, NULL);
+    _snwprintf(out, MAX_PATH, L"%s\\FLA\\pending.json", lad);
+}
+
+/* 把命令行参数写成 {"args":["..."]} —— 只做最小的 JSON 转义 (反斜杠/引号/控制字符) */
+static void SavePendingArgs(const wchar_t* args) {
+    if (!args || !*args) return;
+    wchar_t path[MAX_PATH];
+    PendingPath(path);
+
+    int need = WideCharToMultiByte(CP_UTF8, 0, args, -1, NULL, 0, NULL, NULL);
+    if (need <= 1) return;
+    char* utf8 = (char*)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)need * 6 + 32);
+    if (!utf8) return;
+    WideCharToMultiByte(CP_UTF8, 0, args, -1, utf8, need, NULL, NULL);
+
+    char* out = (char*)HeapAlloc(GetProcessHeap(), 0, (SIZE_T)need * 6 + 64);
+    if (out) {
+        char* w = out;
+        memcpy(w, "{\"args\":[\"", 10); w += 10;   /* 不含结尾 NUL */
+        for (char* r = utf8; *r; r++) {
+            unsigned char c = (unsigned char)*r;
+            if (c == '"' || c == '\\') { *w++ = '\\'; *w++ = (char)c; }
+            else if (c == '\n') { *w++ = '\\'; *w++ = 'n'; }
+            else if (c == '\r') { *w++ = '\\'; *w++ = 'r'; }
+            else if (c == '\t') { *w++ = '\\'; *w++ = 't'; }
+            else if (c < 0x20) { w += sprintf(w, "\\u%04x", c); }
+            else *w++ = (char)c;
+        }
+        memcpy(w, "\"],\"ts\":0}", 10); w += 10;
+        HANDLE f = CreateFileW(path, GENERIC_WRITE, 0, NULL, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, NULL);
+        if (f != INVALID_HANDLE_VALUE) {
+            DWORD wr = 0;
+            WriteFile(f, out, (DWORD)(w - out), &wr, NULL);
+            CloseHandle(f);
+        }
+        HeapFree(GetProcessHeap(), 0, out);
+    }
+    HeapFree(GetProcessHeap(), 0, utf8);
+}
+
+/* 已有实例在跑 → 唤醒它。返回 TRUE 表示已把请求交出去 (调用方应立刻退出)。 */
+static BOOL WakeExistingInstance(const wchar_t* args) {
+    SavePendingArgs(args);
+    HANDLE ev = OpenEventW(EVENT_MODIFY_STATE, FALSE, FLA_EVENT_NAME);
+    if (!ev) return FALSE;
+    SetEvent(ev);
+    CloseHandle(ev);
+    return TRUE;
 }
 
 static BOOL ReadTrailer(void) {
@@ -163,6 +227,23 @@ static const wchar_t* ArgsAfterExe(const wchar_t* cl) {
 int WINAPI wWinMain(HINSTANCE hi, HINSTANCE prev, PWSTR cl, int show) {
     (void)prev; (void)cl; (void)show;
     GetModuleFileNameW(NULL, g_self, MAX_PATH);
+
+    /* --- 严格单实例: 必须在解压/启动 python 之前判断, 否则连点会连开多个 --- */
+    HANDLE mutex = CreateMutexW(NULL, FALSE, FLA_MUTEX_NAME);
+    BOOL already = (mutex != NULL) && (GetLastError() == ERROR_ALREADY_EXISTS);
+    if (already) {
+        if (WakeExistingInstance(ArgsAfterExe(GetCommandLineW()))) {
+            if (mutex) CloseHandle(mutex);
+            return 0;                     /* 已唤起正在运行的 FLA, 自身静默退出 */
+        }
+        /* 事件打不开 (极老的版本在跑): 提示而不是再开一个 */
+        if (mutex) CloseHandle(mutex);
+        MessageBoxW(NULL, L"FLA 已经在运行中，请查看任务栏 / 屏幕右下角。", L"FLA 课堂助手",
+                    MB_OK | MB_ICONINFORMATION);
+        return 0;
+    }
+    /* mutex 句柄一直持有到进程退出, 由内核保证唯一性; already 分支已 CloseHandle */
+
     if (!ReadTrailer()) Fail(L"FLA.exe 文件不完整，请重新下载。");
 
     wchar_t lad[MAX_PATH], root[MAX_PATH];

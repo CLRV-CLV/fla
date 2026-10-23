@@ -12,7 +12,8 @@ import os
 import time
 
 from PyQt5.QtCore import QObject, QPointF, QRect, QRectF, Qt, QTimer, pyqtSignal
-from PyQt5.QtGui import QColor, QCursor, QFont, QIcon, QPainter, QPainterPath, QPen, QPixmap, QPolygonF, QRegion
+from PyQt5.QtGui import (QColor, QCursor, QFont, QIcon, QLinearGradient, QPainter, QPainterPath, QPen,
+                         QPixmap, QPolygonF, QRegion)
 from PyQt5.QtWidgets import QApplication, QFrame, QHBoxLayout, QLabel, QMenu, QVBoxLayout, QWidget
 from qfluentwidgets import FluentIcon as FIF
 from qfluentwidgets import (BodyLabel, PrimaryPushButton, PushButton, SegmentedWidget, ToolTipFilter,
@@ -700,6 +701,254 @@ class EraserPopup(_Card):
         self.adjustSize()
 
 
+# ================================================================== iOS 式时间滚轮
+class TimeWheel(QWidget):
+    """iOS TimerPicker 风格的三列滚轮 (时 / 分 / 秒), 纯 QPainter 自绘。
+
+    · 拖动: 按住上下滑动, 松手带惯性并吸附到整格
+    · 滚轮: 鼠标滚轮逐格滚动 (Shift 加速)
+    · 键盘: ↑↓ 调当前列, ←→ 切列, PageUp/PageDown ±5
+    · 外部 ±: step(unit, delta) 供「时−/时＋」这类按钮调用
+    """
+
+    valueChanged = pyqtSignal(int)
+
+    ITEM_H = 40
+    VISIBLE = 3          # 中心格左右各显示几个
+
+    UNITS = ("h", "m", "s")
+    MODS = (24, 60, 60)
+
+    def __init__(self, parent=None, value: int = 300):
+        super().__init__(parent)
+        self._pos = [0.0, 0.0, 0.0]
+        self._vel = [0.0, 0.0, 0.0]
+        self._lock = False
+        self._focus = 1
+        self._drag = None
+        self._anim = QTimer(self, interval=16, timeout=self._animate)
+        self.setMinimumWidth(260)
+        self.setFixedHeight(self.ITEM_H * 5 + 10)
+        self.setFocusPolicy(Qt.StrongFocus)
+        self.setCursor(Qt.OpenHandCursor)
+        self.setMouseTracking(True)
+        self.setValue(value, emit=False)
+
+    # ---------------- 数值 ----------------
+    def value(self) -> int:
+        h, m, s = (int(round(self._pos[i])) % self.MODS[i] for i in range(3))
+        return h * 3600 + m * 60 + s
+
+    def setValue(self, sec: int, emit: bool = True):
+        sec = max(0, min(86399, int(sec or 0)))
+        h, rest = divmod(sec, 3600)
+        m, s = divmod(rest, 60)
+        self._pos = [float(h), float(m), float(s)]
+        self._vel = [0.0, 0.0, 0.0]
+        self._anim.stop()
+        self.update()
+        if emit:
+            self.valueChanged.emit(self.value())
+
+    def setDisabled(self, flag: bool):
+        self._lock = bool(flag)
+        self.setCursor(Qt.ArrowCursor if flag else Qt.OpenHandCursor)
+        self.update()
+
+    def step(self, unit: str, delta: int):
+        """外部 ± 按钮: unit = h/m/s, delta = ±1 (秒 ±10)"""
+        if self._lock:
+            return
+        try:
+            i = self.UNITS.index(unit)
+        except ValueError:
+            return
+        amount = 3600 if i == 0 else (60 if i == 1 else 10)
+        total = self.value() + int(delta) * amount
+        total = 0 if total < 0 else (86399 if total > 86399 else total)
+        self._focus = i
+        self.setValue(total)
+
+    # ---------------- 几何 ----------------
+    def _col_rect(self, i: int) -> QRect:
+        w = self.width() / 3.0
+        return QRect(int(i * w), 0, int(w), self.height())
+
+    def _col_at(self, x: int) -> int:
+        return max(0, min(2, int(x / max(1, self.width() / 3.0))))
+
+    # ---------------- 交互 ----------------
+    def mousePressEvent(self, e):
+        if e.button() != Qt.LeftButton:
+            return
+        if self._lock:
+            return
+        i = self._col_at(e.x())
+        self._focus = i
+        self._anim.stop()
+        self._vel = [0.0, 0.0, 0.0]
+        self._drag = {"col": i, "y": e.y(), "pos": self._pos[i], "t": time.time(), "v": 0.0}
+        self.setCursor(Qt.ClosedHandCursor)
+        self.update()
+
+    def mouseMoveEvent(self, e):
+        if self._drag is None:
+            return
+        col = self._drag["col"]
+        now = time.time()
+        dy = e.y() - self._drag["y"]
+        newpos = self._drag["pos"] - dy / float(self.ITEM_H)
+        dt = max(0.001, now - self._drag["t"])
+        self._drag["v"] = (newpos - self._pos[col]) / dt
+        self._pos[col] = newpos
+        self._drag["t"] = now
+        self._sync_emit()
+        self.update()
+
+    def mouseReleaseEvent(self, e):
+        if self._drag is None:
+            return
+        col = self._drag["col"]
+        v = max(-12.0, min(12.0, self._drag.get("v", 0.0) * 0.06))
+        self._drag = None
+        self.setCursor(Qt.OpenHandCursor)
+        self._vel[col] = v if abs(v) > 0.6 else 0.0
+        self._anim.start()
+        QTimer.singleShot(240, self._settle_if_idle)
+
+    def wheelEvent(self, e):
+        if self._lock:
+            return
+        i = self._col_at(e.x())
+        self._focus = i
+        notches = e.angleDelta().y() / 120.0
+        step = notches * (5 if e.modifiers() & Qt.ShiftModifier else 1)
+        self._pos[i] -= step
+        self._anim.stop()
+        self._snap(i)
+        e.accept()
+
+    def keyPressEvent(self, e):
+        if self._lock:
+            return
+        k = e.key()
+        if k in (Qt.Key_Up, Qt.Key_Down):
+            d = -1 if k == Qt.Key_Up else 1
+            self._pos[self._focus] += d
+            self._snap(self._focus)
+        elif k in (Qt.Key_Left, Qt.Key_Right):
+            self._focus = (self._focus + (1 if k == Qt.Key_Right else -1)) % 3
+            self.update()
+        elif k in (Qt.Key_PageUp, Qt.Key_PageDown):
+            d = -5 if k == Qt.Key_PageUp else 5
+            self._pos[self._focus] += d
+            self._snap(self._focus)
+        else:
+            e.ignore()
+            return
+        e.accept()
+
+    def _snap(self, i: int):
+        self._pos[i] = float(round(self._pos[i]))
+        self._sync_emit()
+        self.update()
+
+    def _settle_if_idle(self):
+        if self._drag is None and all(abs(v) < 0.05 for v in self._vel):
+            for i in range(3):
+                if abs(self._pos[i] - round(self._pos[i])) > 0.001:
+                    self._pos[i] = float(round(self._pos[i]))
+            self.update()
+
+    def _animate(self):
+        alive = False
+        for i in range(3):
+            v = self._vel[i]
+            if v:
+                self._pos[i] += v
+                self._vel[i] = v * 0.86
+                if abs(self._vel[i]) < 0.03:
+                    self._vel[i] = 0.0
+                    self._pos[i] = float(round(self._pos[i]))
+                alive = True
+            elif abs(self._pos[i] - round(self._pos[i])) > 0.002:
+                self._pos[i] += (round(self._pos[i]) - self._pos[i]) * 0.35
+                alive = True
+            else:
+                self._pos[i] = float(round(self._pos[i]))
+        self._sync_emit()
+        self.update()
+        if not alive:
+            self._anim.stop()
+
+    _last = None
+
+    def _sync_emit(self):
+        v = self.value()
+        if v != self._last:
+            self._last = v
+            self.valueChanged.emit(v)
+
+    # ---------------- 绘制 ----------------
+    def paintEvent(self, e):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        w, h = self.width(), self.height()
+        cy = h / 2.0
+        # 背景
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(246, 247, 249))
+        p.drawRoundedRect(QRectF(0, 0, w, h), 14, 14)
+        # 选中带
+        p.setBrush(QColor(17, 17, 17, 14))
+        p.drawRoundedRect(QRectF(6, cy - self.ITEM_H / 2.0, w - 12, self.ITEM_H), 10, 10)
+
+        for i in range(3):
+            rect = self._col_rect(i)
+            # 列表头
+            p.setPen(QColor(120, 124, 132) if i != self._focus else QColor(17, 17, 17))
+            hf = QFont("Microsoft YaHei UI", 8)
+            p.setFont(hf)
+            p.drawText(QRect(rect.x(), 2, rect.width(), 16), Qt.AlignCenter, "时分秒"[i])
+            # 数字
+            base = int(math.floor(self._pos[i]))
+            for k in range(-2, 4):
+                idx = base + k
+                dist = abs(idx - self._pos[i])
+                if dist > self.VISIBLE:
+                    continue
+                y = cy + (idx - self._pos[i]) * self.ITEM_H
+                alpha = max(0.10, 1.0 - dist / 2.2)
+                if self._lock:
+                    alpha *= 0.45
+                col = QColor(17, 17, 17)
+                col.setAlphaF(min(1.0, alpha))
+                size = 26 if dist < 0.55 else 20
+                f = QFont("Segoe UI", size)
+                f.setBold(dist < 0.55)
+                p.setFont(f)
+                p.setPen(col)
+                txt = self.UNITS[i] == "h" and "%02d" % (idx % 24) or "%02d" % (idx % 60)
+                p.drawText(QRectF(rect.x(), y - self.ITEM_H / 2.0, rect.width(), self.ITEM_H),
+                           Qt.AlignCenter, txt)
+            # 列间分隔
+            if i < 2:
+                p.setPen(QColor(0, 0, 0, 18))
+                p.drawLine(int(rect.right()), 18, int(rect.right()), h - 18)
+        # 上下淡出遮罩
+        for rect, use_top in ((QRectF(0, 0, w, 16), True), (QRectF(0, h - 16, w, 16), False)):
+            g = QLinearGradient(rect.topLeft(), rect.bottomLeft()) if use_top else QLinearGradient(rect.bottomLeft(), rect.topLeft())
+            g.setColorAt(0.0, QColor(246, 247, 249, 255))
+            g.setColorAt(1.0, QColor(246, 247, 249, 0))
+            p.setPen(Qt.NoPen)
+            p.setBrush(g)
+            p.drawRect(rect)
+        if self._lock:
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 90))
+            p.drawRoundedRect(QRectF(0, 0, w, h), 14, 14)
+
+
 # ================================================================== 计时器
 class TimerWindow(_Card):
     def __init__(self):
@@ -734,6 +983,37 @@ class TimerWindow(_Card):
             b.clicked.connect(lambda _=False, m=m: self._preset(m * 60))
             presets.addWidget(b)
         lay.addLayout(presets)
+
+        # ---- v1.36: iOS 式滚轮设定 (拖动 / 加减 时·分·秒) ----
+        self.wheelToggle = PushButton(FIF.SYNC, "滚轮设定")
+        self.wheelToggle.clicked.connect(self._toggle_wheel)
+        lay.addWidget(self.wheelToggle)
+        self.wheelBox = QWidget(self)
+        wl = QVBoxLayout(self.wheelBox)
+        wl.setContentsMargins(0, 0, 0, 0)
+        wl.setSpacing(6)
+        self.wheel = TimeWheel(self.wheelBox, value=self.total)
+        self.wheel.valueChanged.connect(self._on_wheel)
+        wl.addWidget(self.wheel)
+        steppers = QHBoxLayout()
+        steppers.setSpacing(4)
+        for unit, name in (("h", "时"), ("m", "分"), ("s", "秒")):
+            lab = BodyLabel(name)
+            lab.setFixedWidth(18)
+            minus = PushButton("−")
+            plus = PushButton("＋")
+            for b in (minus, plus):
+                b.setFixedWidth(34)
+            minus.clicked.connect(lambda _=False, u=unit: self.wheel.step(u, -1))
+            plus.clicked.connect(lambda _=False, u=unit: self._plus(u))
+            steppers.addWidget(lab)
+            steppers.addWidget(minus)
+            steppers.addWidget(plus)
+            steppers.addSpacing(6)
+        wl.addLayout(steppers)
+        self.wheelBox.setVisible(False)
+        lay.addWidget(self.wheelBox)
+
         acts = QHBoxLayout()
         self.go = PrimaryPushButton(FIF.PLAY, "开始")
         self.go.clicked.connect(self.toggle)
@@ -749,6 +1029,30 @@ class TimerWindow(_Card):
         self.down = down
         self.reset()
 
+    def _toggle_wheel(self):
+        vis = not self.wheelBox.isVisible()
+        self.wheelBox.setVisible(vis)
+        self.wheelToggle.setText("收起滚轮" if vis else "滚轮设定")
+        if vis:
+            self.wheel.setValue(self.total if self.down else self.left, emit=False)
+        self.adjustSize()
+
+    def _plus(self, unit):
+        self.wheel.step(unit, 1)
+
+    def _on_wheel(self, sec):
+        """拖滚轮 → 立即成为倒计时目标 (滚轮在运行时被禁用, 无需防抖)"""
+        if not self.down:
+            self.down = True
+            self.mode.setCurrentItem("down")
+        self.running = False
+        self.tick.stop()
+        self.go.setText("开始")
+        self.go.setIcon(FIF.PLAY)
+        self.total = max(0, int(sec))
+        self.left = self.total
+        self._show()
+
     def _preset(self, s):
         self.down = True
         self.mode.setCurrentItem("down")
@@ -760,13 +1064,19 @@ class TimerWindow(_Card):
         self.go.setText("暂停" if self.running else "开始")
         self.go.setIcon(FIF.PAUSE if self.running else FIF.PLAY)
         (self.tick.start() if self.running else self.tick.stop())
+        self.wheel.setDisabled(self.running)      # 运行中锁住滚轮, 防止误触改时间
+        self.wheelToggle.setEnabled(not self.running)
 
     def reset(self):
         self.running = False
         self.tick.stop()
         self.go.setText("开始")
         self.go.setIcon(FIF.PLAY)
+        self.wheel.setDisabled(False)
+        self.wheelToggle.setEnabled(True)
         self.left = self.total if self.down else 0
+        if self.down:
+            self.wheel.setValue(self.total, emit=False)
         self._show()
 
     def _tick(self):
@@ -783,8 +1093,9 @@ class TimerWindow(_Card):
         self._show()
 
     def _show(self):
-        m, s = divmod(self.left, 60)
-        self.label.setText(f"{m:02d}:{s:02d}")
+        h, rest = divmod(max(0, int(self.left)), 3600)
+        m, s = divmod(rest, 60)
+        self.label.setText(f"{h}:{m:02d}:{s:02d}" if h else f"{m:02d}:{s:02d}")
 
     def popup(self):
         screen = _screen_for_rect(self.frameGeometry()) if self.isVisible() else None

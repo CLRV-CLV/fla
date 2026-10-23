@@ -634,7 +634,9 @@
       stopwatchRun: false,
       stopwatchTimer: null,
       stopwatchLast: 0,
-      stopwatchLaps: []
+      stopwatchLaps: [],
+      wheelOpen: false,
+      wheel: null
     };
 
     function playTone(freq, dur, type, delay) {
@@ -699,6 +701,31 @@
       }
     }
 
+    /* iOS 式时/分/秒滚轮: 依赖 web/js/timewheel.js (未加载时自动隐藏入口) */
+    function mountTimerWheel() {
+      var box = timerWidget.querySelector('#tmWheelBox');
+      var toggle = timerWidget.querySelector('#tmWheelToggle');
+      if (!box || !toggle) return;
+      if (!window.TimeWheel) { toggle.style.display = 'none'; return; }
+      toggle.onclick = function () {
+        TMR.wheelOpen = !TMR.wheelOpen;
+        box.classList.toggle('hidden', !TMR.wheelOpen);
+        toggle.textContent = TMR.wheelOpen ? '滚轮设定 ▴' : '滚轮设定 ▾';
+        renderTimerWidget();
+      };
+      if (!TMR.wheelOpen) { TMR.wheel = null; return; }
+      TMR.wheel = window.TimeWheel.mount(box, {
+        value: TMR.countdownSec,
+        onChange: function (v) {
+          if (TMR.countdownRun) return;
+          TMR.countdownSec = v || 1;
+          TMR.countdownRem = v || 1;
+          updateTimerUI();
+        }
+      });
+      if (TMR.countdownRun) TMR.wheel.setDisabled(true);
+    }
+
     function renderTimerWidget() {
       timerWidget.innerHTML =
         '<div class="fla-widget-head" id="tmHead">' +
@@ -731,6 +758,11 @@
             '<button class="fla-tpill" data-adj="30">+30秒</button>' +
             '<button class="fla-tpill" data-adj="60">+1分</button>' +
           '</div>' +
+          '<div class="fla-timer-custom fla-timer-wheelrow">' +
+            '<button class="fla-tpill" id="tmWheelToggle">滚轮设定 ▾</button>' +
+            '<span style="font-size:11.5px;opacity:.65;">拖动/点 ±，像 iOS 计时器</span>' +
+          '</div>' +
+          '<div class="fla-timer-wheelbox' + (TMR.wheelOpen ? '' : ' hidden') + '" id="tmWheelBox"></div>' +
           '<div class="fla-timer-custom">' +
             '<span>自定义</span>' +
             '<input id="tmCustomMin" type="number" min="0" max="5999" value="' + Math.floor(TMR.countdownSec / 60) + '" aria-label="分钟">' +
@@ -756,6 +788,7 @@
 
       renderLaps();
       bindTimerEvents();
+      mountTimerWheel();
       makeDraggable(timerWidget, timerWidget.querySelector('#tmHead'), true);
     }
 
@@ -885,6 +918,7 @@
     function startCountdown() {
       if (TMR.countdownRem <= 0) TMR.countdownRem = TMR.countdownSec;
       TMR.countdownRun = true;
+      if (TMR.wheel) TMR.wheel.setDisabled(true);
       clearInterval(TMR.countdownTimer);
       var lastTick = Date.now();
       TMR.countdownTimer = setInterval(function () {
@@ -908,6 +942,7 @@
       TMR.countdownRun = false;
       clearInterval(TMR.countdownTimer);
       TMR.countdownTimer = null;
+      if (TMR.wheel) TMR.wheel.setDisabled(false);
     }
 
     function startStopwatch() {

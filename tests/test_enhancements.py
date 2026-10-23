@@ -46,7 +46,7 @@ def test_desktop_version_and_download():
     assert ver_resp.status_code == 200
     ver_data = ver_resp.json()
     assert ver_data["ok"] is True
-    assert ver_data["version"] == "3.5.6"
+    assert ver_data["version"] == "3.6.0"
 
     # Check download endpoint
     dl_resp = client.get("/api/desktop/download")
@@ -261,8 +261,24 @@ def test_web_static_assets_serve():
     resp_index = client.get("/")
     assert resp_index.status_code == 200
     assert "FLA" in resp_index.text
-    assert "js/app.js?v=159" in resp_index.text
+    assert "js/app.js?v=160" in resp_index.text
     assert "js/api.js?v=136" in resp_index.text
+    # v1.37 课堂工具: 抽人/计时/分组/计分/表决/函数图像 独立页 + iOS 式滚轮
+    assert "js/timewheel.js?v=1" in resp_index.text
+    assert "js/msstage.js?v=140" in resp_index.text
+
+    resp_classroom = client.get("/classroom.html")
+    assert resp_classroom.status_code == 200
+    assert "timewheel.js" in resp_classroom.text
+    for tab in ("pick", "group", "timer", "score", "vote", "graph"):
+        assert f'data-t="{tab}"' in resp_classroom.text
+    resp_tw = client.get("/js/timewheel.js")
+    assert resp_tw.status_code == 200
+    assert "TimeWheel" in resp_tw.text
+
+    resp_present = client.get("/present.html")
+    assert resp_present.status_code == 200
+    assert "js/timewheel.js?v=1" in resp_present.text
 
     resp_css = client.get("/style.css")
     assert resp_css.status_code == 200

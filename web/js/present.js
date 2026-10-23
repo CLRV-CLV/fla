@@ -290,6 +290,7 @@
       '<span id="pbtn-pen" title="板书 (P)">笔</span>' +
       '<span id="pbtn-laser" title="激光笔 (L)">⦿</span>' +
       '<span id="pbtn-cmp" title="对照原版静态页 (S)">对照</span>' +
+      '<span id="pbtn-pick" title="随机抽人（名单 / 不重复）">抽人</span>' +
       '<span id="pbtn-full" title="全屏 (F)">⛶</span>' +
       '</div>' +
       '<div id="ptools" class="hidden">' +
@@ -307,6 +308,34 @@
       '<div id="phint">点击 / 空格：下一步 · P：板书 · S：对照原版 · B：黑屏</div>' +
       '<div id="pblack"></div>' +
       '<div id="plaser"></div>' +
+      '<div id="ppick" class="ppick hidden">' +
+        '<div class="ppick-card">' +
+          '<div class="ppick-head"><b>随机抽人</b>' +
+            '<span class="ppick-x" id="ppick-x">✕</span></div>' +
+          '<div class="ppick-stage"><div id="ppick-name">准备就绪</div>' +
+            '<div class="ppick-meta" id="ppick-meta"></div></div>' +
+          '<div class="ppick-row">' +
+            '<button id="ppick-go" class="ppick-primary">开始抽选</button>' +
+            '<button id="ppick-reset" class="ppick-btn">重置池</button>' +
+            '<button id="ppick-list" class="ppick-btn">名单</button>' +
+          '</div>' +
+          '<div class="ppick-row" id="ppick-counts">' +
+            '<span class="ppick-lbl">人数</span>' +
+            '<button class="ppick-chip on" data-c="1">1</button>' +
+            '<button class="ppick-chip" data-c="2">2</button>' +
+            '<button class="ppick-chip" data-c="3">3</button>' +
+            '<button class="ppick-chip" data-c="5">5</button>' +
+            '<label class="ppick-lbl" style="cursor:pointer"><input type="checkbox" id="ppick-norepeat" checked> 不重复</label>' +
+          '</div>' +
+          '<div class="ppick-listbox hidden" id="ppick-listbox">' +
+            '<textarea id="ppick-ta" spellcheck="false" placeholder="每行一个学生姓名"></textarea>' +
+            '<div class="ppick-row" style="margin-top:8px">' +
+              '<button id="ppick-save" class="ppick-primary">保存名单</button>' +
+              '<button id="ppick-demo" class="ppick-btn">填入示例</button>' +
+            '</div>' +
+          '</div>' +
+        '</div>' +
+      '</div>' +
       '</div>';
     document.getElementById('pexit').onclick = exitPresent;
     document.getElementById('pbtn-prev').onclick = function (e) { e.stopPropagation(); prevPage(); };
@@ -315,6 +344,7 @@
     document.getElementById('pbtn-laser').onclick = function (e) { e.stopPropagation(); setTool(S.tool === 'laser' ? 'cursor' : 'laser'); };
     document.getElementById('pbtn-cmp').onclick = function (e) { e.stopPropagation(); toggleCompare(); };
     document.getElementById('pbtn-full').onclick = function (e) { e.stopPropagation(); toggleFull(); };
+    document.getElementById('pbtn-pick').onclick = function (e) { e.stopPropagation(); togglePicker(); };
     document.getElementById('ptime').onclick = function (e) { e.stopPropagation(); S.t0 = Date.now(); };
     var ts = document.getElementById('ptools');
     Array.prototype.forEach.call(ts.querySelectorAll('.ptl'), function (b) {
@@ -339,6 +369,8 @@
     document.getElementById('pstage').addEventListener('pointerup', onUp);
     document.getElementById('pstage').addEventListener('pointercancel', onUp);
     window.addEventListener('keydown', onKey);
+    bindPicker();
+    pickResetPool();
     var rzT = 0;
     window.addEventListener('resize', function () {
       clearTimeout(rzT);
@@ -1235,6 +1267,134 @@
     else if (k === 'f' || k === 'F') toggleFull();
     else if (k === 't' || k === 'T') { S.t0 = Date.now(); }
     else if (k === 'd' || k === 'D') { debugInfo(); }
+    else if (k === 'r' || k === 'R') { if (PK.open) { if (PK.rolling) pickStop(); else pickStart(); } else togglePicker(); }
+  }
+  /* ---------------- 随机抽人 (与课件库/课堂工具共用同一份本地名单) ---------------- */
+  var PK = {
+    open: false, rolling: false, timer: 0, count: 1, noRepeat: true,
+    pool: [], wins: [], hist: []
+  };
+  var ROSTER_KEY = 'fla_picker_roster';
+  var PICK_DEMO = ['张明','李华','王强','赵敏','钱程','孙悦','周杰','吴桐',
+                   '郑浩','陈晨','韩雪','刘洋','杨柳','黄晓','何润','徐静'];
+  function pickRoster() {
+    try {
+      var raw = JSON.parse(localStorage.getItem(ROSTER_KEY) || 'null');
+      if (raw && raw.length) return raw.map(String);
+    } catch (e) {}
+    return PICK_DEMO.slice();
+  }
+  function savePickRoster(list) {
+    try { localStorage.setItem(ROSTER_KEY, JSON.stringify(list)); } catch (e) {}
+  }
+  function pickResetPool() {
+    PK.pool = pickRoster();
+    PK.wins = [];
+    pickPaint('');
+  }
+  function pickPaint(name) {
+    var el = document.getElementById('ppick-name');
+    var meta = document.getElementById('ppick-meta');
+    if (el && name != null) el.textContent = name;
+    if (meta) meta.textContent = '候选 ' + PK.pool.length + ' / ' + pickRoster().length + ' 人' +
+      (PK.hist.length ? ' · 已抽 ' + PK.hist.length + ' 人次' : '');
+  }
+  function pickWinners(pool, n) {
+    var copy = pool.slice(), out = [];
+    n = Math.min(n, copy.length);
+    for (var i = 0; i < n; i++) out.push(copy.splice(Math.floor(Math.random() * copy.length), 1)[0]);
+    return out;
+  }
+  function pickStart() {
+    var pool = PK.noRepeat ? PK.pool : pickRoster();
+    if (!pool.length) { pickResetPool(); pool = PK.pool.slice(); }
+    if (!pool.length) return;
+    PK.rolling = true;
+    document.getElementById('ppick-go').textContent = '停止';
+    var nameEl = document.getElementById('ppick-name');
+    nameEl.classList.add('rolling');
+    var all = pickRoster(), t0 = Date.now();
+    clearInterval(PK.timer);
+    PK.timer = setInterval(function () {
+      nameEl.textContent = all[Math.floor(Math.random() * all.length)];
+      if (Date.now() - t0 > 1500) pickStop(pool);
+    }, 55);
+  }
+  function pickStop(pool) {
+    clearInterval(PK.timer);
+    PK.rolling = false;
+    document.getElementById('ppick-go').textContent = '开始抽选';
+    var nameEl = document.getElementById('ppick-name');
+    nameEl.classList.remove('rolling');
+    var wins = pickWinners(pool || (PK.noRepeat ? PK.pool : pickRoster()), PK.count);
+    if (!wins.length) return;
+    if (PK.noRepeat) {
+      wins.forEach(function (n) {
+        var i = PK.pool.indexOf(n);
+        if (i >= 0) PK.pool.splice(i, 1);
+      });
+    }
+    PK.wins = wins;
+    PK.hist = PK.hist.concat(wins);
+    nameEl.textContent = wins.join('  ·  ');
+    nameEl.classList.remove('win');
+    void nameEl.offsetWidth;
+    nameEl.classList.add('win');
+    pickPaint(wins.join('  ·  '));
+  }
+  function togglePicker() {
+    var box = document.getElementById('ppick');
+    if (!box) return;
+    PK.open = !PK.open;
+    box.classList.toggle('hidden', !PK.open);
+    if (PK.open) {
+      if (!PK.pool.length) pickResetPool(); else pickPaint();
+      document.getElementById('ppick-ta').value = pickRoster().join('\n');
+    }
+  }
+  function bindPicker() {
+    var box = document.getElementById('ppick');
+    if (!box) return;
+    document.getElementById('ppick-x').onclick = togglePicker;
+    box.addEventListener('click', function (e) { if (e.target === box) togglePicker(); });
+    document.getElementById('ppick-go').onclick = function () {
+      if (PK.rolling) pickStop(); else pickStart();
+    };
+    document.getElementById('ppick-reset').onclick = function () {
+      if (PK.rolling) return;
+      pickResetPool();
+      document.getElementById('ppick-name').textContent = '准备就绪';
+    };
+    var lb = document.getElementById('ppick-listbox');
+    document.getElementById('ppick-list').onclick = function () {
+      lb.classList.toggle('hidden');
+      if (!lb.classList.contains('hidden')) document.getElementById('ppick-ta').value = pickRoster().join('\n');
+    };
+    document.getElementById('ppick-save').onclick = function () {
+      var seen = {}, list = [];
+      document.getElementById('ppick-ta').value.split(/[\r\n,，;；\t]+/).forEach(function (s) {
+        s = s.replace(/^\s+|\s+$/g, '');
+        if (s && s.length <= 40 && !seen[s] && list.length < 5000) { seen[s] = 1; list.push(s); }
+      });
+      if (!list.length) { toastMs('名单不能为空'); return; }
+      savePickRoster(list);
+      pickResetPool();
+      toastMs('已保存 ' + list.length + ' 人名单');
+    };
+    document.getElementById('ppick-demo').onclick = function () {
+      document.getElementById('ppick-ta').value = PICK_DEMO.join('\n');
+    };
+    Array.prototype.forEach.call(box.querySelectorAll('.ppick-chip'), function (b) {
+      b.onclick = function () {
+        Array.prototype.forEach.call(box.querySelectorAll('.ppick-chip'), function (x) { x.classList.remove('on'); });
+        b.classList.add('on');
+        PK.count = parseInt(b.getAttribute('data-c'), 10) || 1;
+      };
+    });
+    document.getElementById('ppick-norepeat').onchange = function () {
+      PK.noRepeat = this.checked;
+      if (!this.checked) pickResetPool();
+    };
   }
   function setModeDot() {
     var d = document.getElementById('pmode');

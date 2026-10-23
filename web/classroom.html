@@ -1,0 +1,943 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>课堂工具 · FLA</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23111111' stroke-width='2'%3E%3Crect x='2' y='4' width='20' height='14' rx='2'/%3E%3Cpath d='M8 21h8M12 18v3'/%3E%3C/svg%3E">
+<style>
+/* 自包含样式: 离线可用, 不依赖 style.css */
+:root{
+  --bg:#f6f7f9; --card:#fff; --ink:#18181b; --ink2:#3f3f46; --mut:#71717a;
+  --line:#e6e7eb; --brand:#111114; --ok:#15803d; --warn:#b45309; --err:#b91c1c;
+  --radius:16px; --shadow:0 8px 30px rgba(15,23,42,.07);
+}
+*{box-sizing:border-box;-webkit-tap-highlight-color:transparent}
+html,body{margin:0;height:100%}
+body{
+  background:var(--bg); color:var(--ink); min-height:100%;
+  font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","Hiragino Sans GB","Microsoft YaHei","Noto Sans CJK SC",sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button{font:inherit;color:inherit;cursor:pointer}
+h1,h2,h3,h4{margin:0}
+.wrap{max-width:1180px;margin:0 auto;padding:18px 18px 60px}
+.top{display:flex;align-items:center;gap:14px;flex-wrap:wrap;margin-bottom:16px}
+.brand{display:flex;align-items:center;gap:9px;font-weight:800;font-size:17px;letter-spacing:.2px}
+.brand svg{width:24px;height:24px}
+.brand small{font-weight:600;color:var(--mut);font-size:12.5px}
+.back{margin-left:auto;font-size:13px;color:var(--ink2);text-decoration:none;border:1px solid var(--line);background:#fff;padding:8px 14px;border-radius:10px}
+.back:hover{background:#fafafa}
+.tabs{display:flex;gap:6px;flex-wrap:wrap;background:#fff;border:1px solid var(--line);padding:6px;border-radius:14px;box-shadow:var(--shadow);margin-bottom:18px}
+.tabs button{border:0;background:transparent;padding:10px 16px;border-radius:10px;font-size:14px;font-weight:600;color:var(--ink2);display:flex;align-items:center;gap:7px}
+.tabs button.on{background:var(--brand);color:#fff}
+.tabs button .em{font-size:16px;line-height:1}
+.pane{display:none}
+.pane.on{display:block;animation:fade .18s ease}
+@keyframes fade{from{opacity:0;transform:translateY(4px)}to{opacity:1;transform:none}}
+.card{background:var(--card);border:1px solid var(--line);border-radius:var(--radius);box-shadow:var(--shadow);padding:18px}
+.grid2{display:grid;grid-template-columns:1.15fr .85fr;gap:16px}
+@media(max-width:820px){.grid2{grid-template-columns:1fr}}
+.row{display:flex;align-items:center;gap:10px;flex-wrap:wrap}
+.muted{color:var(--mut);font-size:12.5px;line-height:1.7}
+.btn{border:1px solid var(--line);background:#fff;border-radius:11px;padding:9px 15px;font-weight:600;font-size:13.5px}
+.btn:hover{background:#fafafa}
+.btn.primary{background:var(--brand);border-color:var(--brand);color:#fff}
+.btn.primary:hover{opacity:.9}
+.btn.ghost{border-color:transparent;background:#f4f4f5}
+.btn.danger{color:var(--err);border-color:#fecaca;background:#fff5f5}
+.btn.sm{padding:6px 11px;font-size:12.5px;border-radius:9px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+.chip{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 13px;font-size:13px;font-weight:600}
+.chip.on{background:var(--brand);color:#fff;border-color:var(--brand)}
+input[type=text],input[type=number],textarea,select{
+  border:1px solid var(--line);border-radius:10px;padding:9px 11px;font:inherit;font-size:13.5px;background:#fff;color:var(--ink);width:100%
+}
+textarea{resize:vertical;min-height:120px;line-height:1.75}
+label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;margin-bottom:6px}
+
+/* ---------- 抽人 ---------- */
+.pick-stage{
+  position:relative;display:grid;place-items:center;height:230px;border-radius:14px;overflow:hidden;
+  background:radial-gradient(120% 120% at 50% 0%,#fafafa 0%,#f4f4f5 60%,#eeeef1 100%);border:1px solid var(--line)
+}
+.pick-name{font-size:62px;font-weight:800;letter-spacing:2px;line-height:1;transition:transform .12s}
+.pick-name.rolling{color:#52525b;opacity:.9}
+.pick-name.win{animation:pop .5s cubic-bezier(.2,1.3,.4,1)}
+@keyframes pop{0%{transform:scale(.7);opacity:.4}60%{transform:scale(1.12)}100%{transform:scale(1)}}
+.pick-sub{margin-top:10px;font-size:12.5px;color:var(--mut)}
+.pick-hist{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
+.pick-hist span{background:#f4f4f5;border-radius:999px;padding:4px 10px;font-size:12px;color:var(--ink2)}
+.winners{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:14px}
+.winners b{background:#111114;color:#fff;border-radius:12px;padding:8px 16px;font-size:20px}
+
+/* ---------- 计时 ---------- */
+.timer-stage{display:grid;place-items:center;gap:4px;padding:6px 0 2px}
+.timer-big{font-size:78px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:1px;line-height:1.05}
+.timer-big.warn{color:var(--warn)}
+.timer-big.done{color:var(--err);animation:blink 1s steps(2,start) infinite}
+@keyframes blink{50%{opacity:.35}}
+.timer-note{font-size:12.5px;color:var(--mut)}
+/* 滚轮 */
+.tw-wrap{user-select:none;-webkit-user-select:none}
+.tw-cols{display:flex;align-items:flex-start;justify-content:center;gap:6px}
+.tw-seg{display:flex;align-items:center;gap:2px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:4px 2px}
+.tw-col{position:relative;outline:none}
+.tw-col:focus-visible .tw-colbody{box-shadow:0 0 0 3px rgba(17,17,20,.12);border-radius:12px}
+.tw-colbody{position:relative;width:76px;overflow:hidden;border-radius:12px;cursor:grab}
+.tw-col.tw-grabbing .tw-colbody{cursor:grabbing}
+.tw-strip{position:absolute;left:0;right:0;top:50%;will-change:transform}
+.tw-item{
+  text-align:center;font-size:26px;font-weight:700;color:var(--ink);
+  font-variant-numeric:tabular-nums;transition:transform .08s linear;transform-origin:center center
+}
+.tw-item.tw-on{color:#111114}
+.tw-band{
+  position:absolute;left:4px;right:4px;top:50%;height:44px;margin-top:-22px;border-radius:10px;
+  background:rgba(17,17,20,.045);pointer-events:none
+}
+.tw-fade{position:absolute;left:0;right:0;height:44px;pointer-events:none}
+.tw-fade-top{top:0;background:linear-gradient(#fff,rgba(255,255,255,0))}
+.tw-fade-bot{bottom:0;background:linear-gradient(rgba(255,255,255,0),#fff)}
+.tw-label{text-align:center;font-size:11.5px;color:var(--mut);font-weight:600;margin-top:2px}
+.tw-side{display:flex;flex-direction:column;gap:4px;padding-right:2px}
+.tw-side button{
+  width:30px;height:30px;border-radius:9px;border:1px solid var(--line);background:#fff;
+  font-size:16px;font-weight:700;line-height:1;color:var(--ink2);display:grid;place-items:center
+}
+.tw-side button:active{background:#f4f4f5;transform:scale(.96)}
+.tw-disabled,.tw-locked{opacity:.5}
+.tw-locked .tw-colbody{cursor:not-allowed}
+.tw-quick{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:12px}
+.tw-quick button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 13px;font-size:12.5px;font-weight:600;color:var(--ink2)}
+.tw-quick button:hover{background:#fafafa}
+.tw-quick .tw-zero{color:var(--err);border-color:#fecaca}
+
+/* ---------- 计分 / 表决 ---------- */
+.teams{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
+.team{border:1px solid var(--line);border-radius:14px;padding:14px;background:#fff}
+.team h4{font-size:14px;color:var(--ink2);margin-bottom:8px;display:flex;justify-content:space-between;align-items:center}
+.team h4 input{border:0;background:transparent;font:inherit;font-weight:700;padding:2px 0;width:auto;min-width:40px}
+.team .score{font-size:46px;font-weight:800;text-align:center;font-variant-numeric:tabular-nums;line-height:1.1;margin:6px 0 10px}
+.team .ops{display:flex;gap:6px;justify-content:center;flex-wrap:wrap}
+.team .ops button{min-width:44px}
+.vote-list{display:grid;gap:10px}
+.vote-row{display:grid;grid-template-columns:56px 1fr 64px;align-items:center;gap:10px}
+.vote-key{font-weight:800;font-size:18px;text-align:center;background:#f4f4f5;border-radius:10px;padding:10px 0}
+.vote-bar{height:26px;border-radius:8px;background:#f4f4f5;overflow:hidden;position:relative}
+.vote-bar i{display:block;height:100%;width:0;background:linear-gradient(90deg,#111114,#3f3f46);transition:width .3s ease}
+.vote-num{text-align:right;font-weight:700;font-variant-numeric:tabular-nums}
+
+/* ---------- 函数图像 ---------- */
+.graph-wrap{position:relative;border:1px solid var(--line);border-radius:14px;overflow:hidden;background:#fff}
+#graph{display:block;width:100%;height:auto;touch-action:none;cursor:crosshair}
+.fx-list{display:grid;gap:8px}
+.fx-item{display:grid;grid-template-columns:26px 1fr 34px;align-items:center;gap:8px}
+.fx-dot{width:14px;height:14px;border-radius:50%;justify-self:center}
+.fx-item input{font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.hint{font-size:12px;color:var(--mut);margin-top:8px;line-height:1.7}
+.kbd{display:inline-block;border:1px solid var(--line);border-bottom-width:2px;border-radius:6px;padding:0 6px;font-size:11.5px;background:#fafafa;font-weight:600}
+</style>
+</head>
+<body>
+<div class="wrap">
+  <div class="top">
+    <div class="brand">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><rect x="2" y="4" width="20" height="14" rx="2"/><path d="M8 21h8M12 18v3"/></svg>
+      FLA <small>课堂工具</small>
+    </div>
+    <a class="back" href="/#/library">返回课件库</a>
+  </div>
+
+  <div class="tabs" id="tabs">
+    <button data-t="pick" class="on"><span class="em">🎲</span>随机抽人</button>
+    <button data-t="group"><span class="em">👥</span>随机分组</button>
+    <button data-t="timer"><span class="em">⏱</span>计时器</button>
+    <button data-t="score"><span class="em">🏆</span>计分板</button>
+    <button data-t="vote"><span class="em">🗳</span>表决器</button>
+    <button data-t="graph"><span class="em">📈</span>函数图像</button>
+  </div>
+
+  <!-- ============ 抽人 ============ -->
+  <section class="pane on" id="pane-pick">
+    <div class="grid2">
+      <div class="card">
+        <div class="pick-stage">
+          <div id="pickName" class="pick-name">准备就绪</div>
+        </div>
+        <div class="row" style="margin-top:14px;justify-content:center">
+          <button class="btn primary" id="pickGo" style="min-width:150px;font-size:15px;padding:12px 22px">开始抽选</button>
+          <button class="btn" id="pickResetPool">重置候选池</button>
+        </div>
+        <div class="row" style="margin-top:12px;justify-content:center">
+          <span class="muted">人数</span>
+          <div class="row" id="pickCount">
+            <button class="chip on" data-c="1">1 人</button>
+            <button class="chip" data-c="2">2 人</button>
+            <button class="chip" data-c="3">3 人</button>
+            <button class="chip" data-c="5">5 人</button>
+          </div>
+          <label class="muted" style="display:flex;gap:6px;align-items:center;cursor:pointer">
+            <input type="checkbox" id="pickNoRepeat" checked> 不重复
+          </label>
+        </div>
+        <div class="winners" id="pickWinners"></div>
+        <div class="pick-hist" id="pickHist"></div>
+      </div>
+
+      <div class="card">
+        <label class="field">学生名单（每行一个；也可直接粘贴 Excel 一列）</label>
+        <textarea id="roster" spellcheck="false"></textarea>
+        <div class="row" style="margin-top:10px">
+          <button class="btn sm" id="rosterSave">保存名单</button>
+          <button class="btn sm" id="rosterDemo">填入示例</button>
+          <label class="btn sm" style="display:inline-flex;align-items:center">
+            导入文件<input type="file" id="rosterFile" accept=".txt,.csv" hidden>
+          </label>
+          <span class="muted" id="rosterInfo"></span>
+        </div>
+        <p class="hint">名单只保存在本机浏览器里，不会上传。支持 <span class="kbd">空格</span> 开始/停止抽选。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 分组 ============ -->
+  <section class="pane" id="pane-group">
+    <div class="grid2">
+      <div class="card">
+        <label class="field">分组方式</label>
+        <div class="row" id="groupMode">
+          <button class="chip on" data-m="n">按组数</button>
+          <button class="chip" data-m="size">按每组人数</button>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <input type="number" id="groupVal" value="4" min="2" max="20" style="width:110px">
+          <span class="muted" id="groupUnit">组</span>
+          <button class="btn primary" id="groupGo">随机分组</button>
+          <button class="btn" id="groupCopy">复制结果</button>
+        </div>
+        <p class="hint">使用左侧名单；同一组内不会重复，组间人数最多相差 1 人。</p>
+      </div>
+      <div class="card">
+        <div id="groupOut" class="muted">还没有分组结果</div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 计时 ============ -->
+  <section class="pane" id="pane-timer">
+    <div class="grid2">
+      <div class="card">
+        <div class="timer-stage">
+          <div class="timer-big" id="timerBig">05:00</div>
+          <div class="timer-note" id="timerNote">拖动或点击滚轮设定时间</div>
+        </div>
+        <div class="row" style="margin-top:14px;justify-content:center">
+          <button class="btn primary" id="timerGo" style="min-width:120px">开始</button>
+          <button class="btn" id="timerZero">归零</button>
+          <button class="btn" id="timerFull">全屏显示</button>
+          <label class="muted" style="display:flex;gap:6px;align-items:center">
+            <input type="checkbox" id="timerSound" checked> 结束提示音
+          </label>
+        </div>
+        <p class="hint" style="text-align:center">快捷键：<span class="kbd">空格</span> 开始/暂停 · <span class="kbd">R</span> 归零</p>
+      </div>
+      <div class="card">
+        <div id="wheelHost"></div>
+        <p class="hint">像 iOS 一样：手指/鼠标上下拖动数字，或点右侧 <b>+ −</b>；秒列默认为 ±10 秒，按住 <span class="kbd">Shift</span> 为 ±1 秒。计时进行中滚轮会被锁定，先「归零」再改。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ============ 计分 ============ -->
+  <section class="pane" id="pane-score">
+    <div class="card">
+      <div class="row" style="margin-bottom:14px">
+        <button class="btn sm" id="scoreAdd">+ 添加一队</button>
+        <button class="btn sm danger" id="scoreReset">全部清零</button>
+        <span class="muted">分数自动保存在本机</span>
+      </div>
+      <div class="teams" id="teams"></div>
+    </div>
+  </section>
+
+  <!-- ============ 表决 ============ -->
+  <section class="pane" id="pane-vote">
+    <div class="card">
+      <div class="row" style="margin-bottom:12px">
+        <strong style="font-size:15px">举手表决计数</strong>
+        <span class="muted">点按钮或按键盘 1-4 计数，R 清零</span>
+        <button class="btn sm danger" id="voteReset" style="margin-left:auto">清零</button>
+      </div>
+      <div class="vote-list" id="voteList"></div>
+    </div>
+  </section>
+
+  <!-- ============ 函数图像 ============ -->
+  <section class="pane" id="pane-graph">
+    <div class="grid2">
+      <div class="card" style="padding:10px">
+        <div class="graph-wrap"><canvas id="graph" width="1280" height="800"></canvas></div>
+      </div>
+      <div class="card">
+        <label class="field">函数（每行一条，用 x 作自变量）</label>
+        <div class="fx-list" id="fxList"></div>
+        <div class="row" style="margin-top:10px">
+          <button class="btn sm" id="fxAdd">+ 添加函数</button>
+          <button class="btn sm" id="fxFit">重置视图</button>
+        </div>
+        <div class="row" style="margin-top:12px">
+          <label class="muted">x 范围</label>
+          <input type="number" id="xmin" value="-10" style="width:80px">
+          <span class="muted">~</span>
+          <input type="number" id="xmax" value="10" style="width:80px">
+        </div>
+        <p class="hint">
+          支持 <code>sin cos tan asin acos atan sqrt abs ln log exp floor ceil round sign</code>、常量 <code>pi e</code>、运算符 <code>+ - * / ^</code> 和括号。
+          例：<code>sin(x)</code>、<code>x^2-3x+1</code>、<code>2^x</code>、<code>sqrt(x)+ln(x)</code>。
+          滚轮缩放，拖动平移。
+        </p>
+      </div>
+    </div>
+  </section>
+</div>
+
+<script src="js/timewheel.js?v=1"></script>
+<script>
+(function () {
+  'use strict';
+  var $ = function (s, el) { return (el || document).querySelector(s); };
+  var $$ = function (s, el) { return Array.prototype.slice.call((el || document).querySelectorAll(s)); };
+  var LS = {
+    get: function (k, d) { try { var v = localStorage.getItem(k); return v == null ? d : JSON.parse(v); } catch (e) { return d; } },
+    set: function (k, v) { try { localStorage.setItem(k, JSON.stringify(v)); } catch (e) {} }
+  };
+  function esc(s) { return String(s == null ? '' : s).replace(/[&<>"']/g, function (c) { return ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[c]; }); }
+
+  /* ---------------- Tab 切换 ---------------- */
+  function showTab(t) {
+    $$('.tabs button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-t') === t); });
+    $$('.pane').forEach(function (p) { p.classList.toggle('on', p.id === 'pane-' + t); });
+    if (t === 'graph') drawGraph();
+  }
+  $$('.tabs button').forEach(function (b) {
+    b.onclick = function () {
+      showTab(b.getAttribute('data-t'));
+      try { history.replaceState(null, '', '#' + b.getAttribute('data-t')); } catch (e) {}
+    };
+  });
+  /* 支持 #pick / #timer 这类深链 (桌面端「课堂工具」卡片直接跳到对应工具) */
+  function tabFromHash() {
+    var h = String(location.hash || '').replace(/^#/, '').split('?')[0];
+    var ok = { pick: 1, group: 1, timer: 1, score: 1, vote: 1, graph: 1 };
+    return ok[h] ? h : '';
+  }
+  var deepTab = tabFromHash();
+  if (deepTab) showTab(deepTab);
+  window.addEventListener('hashchange', function () { var t = tabFromHash(); if (t) showTab(t); });
+
+  /* ================================================================
+   *  名单 (与放映页 present.js / msstage.js 共用同一个本地键)
+   * ================================================================ */
+  var ROSTER_KEY = 'fla_picker_roster';
+  var DEMO = ['张明','李华','王强','赵敏','钱程','孙悦','周杰','吴桐','郑浩','陈晨',
+              '韩雪','刘洋','杨柳','黄晓','何润','徐静'];
+  function readRoster() {
+    var raw = LS.get(ROSTER_KEY, null);
+    if (Array.isArray(raw) && raw.length) return raw.map(String);
+    return DEMO.slice();
+  }
+  var roster = readRoster();
+
+  function normalizeList(text) {
+    var out = [], seen = {};
+    text.split(/[\r\n,，;；\t]+/).forEach(function (s) {
+      s = String(s).replace(/^\s+|\s+$/g, '');
+      if (!s || s.length > 40 || seen[s] || out.length >= 5000) return;
+      seen[s] = 1; out.push(s);
+    });
+    return out;
+  }
+  function saveRoster(list) {
+    roster = list.slice();
+    LS.set(ROSTER_KEY, roster);
+    $('#roster').value = roster.join('\n');
+    $('#rosterInfo').textContent = roster.length + ' 人';
+    resetPool();
+  }
+  $('#rosterSave').onclick = function () {
+    var list = normalizeList($('#roster').value);
+    if (!list.length) { alert('名单不能为空'); return; }
+    saveRoster(list);
+  };
+  $('#rosterDemo').onclick = function () { $('#roster').value = DEMO.join('\n'); };
+  $('#rosterFile').onchange = function (e) {
+    var f = e.target.files && e.target.files[0];
+    if (!f) return;
+    var r = new FileReader();
+    r.onload = function () {
+      var list = normalizeList(String(r.result || ''));
+      if (list.length) saveRoster(list);
+      else alert('没有解析到姓名，请检查文件（每行一个姓名或一列 CSV）');
+    };
+    r.readAsText(f, 'utf-8');
+    e.target.value = '';
+  };
+  $('#roster').value = roster.join('\n');
+  $('#rosterInfo').textContent = roster.length + ' 人';
+
+  /* ================================================================
+   *  1. 抽人
+   * ================================================================ */
+  var PK = {
+    pool: [],            /* 未抽到的人 */
+    count: 1,
+    noRepeat: true,
+    rolling: false,
+    timer: 0,
+    wins: [],
+    hist: []
+  };
+  function resetPool() { PK.pool = roster.slice(); PK.wins = []; renderWinners(); renderPoolInfo(); }
+  function renderPoolInfo() {
+    var sub = document.getElementById('pickSub');
+    if (sub) sub.textContent = '候选 ' + PK.pool.length + ' / ' + roster.length + ' 人';
+  }
+  function renderWinners() {
+    var box = $('#pickWinners');
+    if (!box) return;
+    box.innerHTML = PK.wins.map(function (n) { return '<b>' + esc(n) + '</b>'; }).join('');
+    var hist = $('#pickHist');
+    if (hist) {
+      hist.innerHTML = PK.hist.slice(-12).map(function (n) { return '<span>' + esc(n) + '</span>'; }).join('');
+    }
+  }
+  var stageEl = $('.pick-stage');
+  var subEl = document.createElement('div');
+  subEl.className = 'pick-sub'; subEl.id = 'pickSub';
+  stageEl.appendChild(subEl);
+
+  $$('#pickCount .chip').forEach(function (b) {
+    b.onclick = function () {
+      $$('#pickCount .chip').forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      PK.count = parseInt(b.getAttribute('data-c'), 10) || 1;
+    };
+  });
+  $('#pickNoRepeat').onchange = function () { PK.noRepeat = this.checked; if (!this.checked) resetPool(); };
+  $('#pickResetPool').onclick = resetPool;
+
+  function pickNames(pool, n) {
+    var copy = pool.slice(), out = [];
+    n = Math.min(n, copy.length);
+    for (var i = 0; i < n; i++) {
+      var j = Math.floor(Math.random() * copy.length);
+      out.push(copy.splice(j, 1)[0]);
+    }
+    return out;
+  }
+
+  function startPick() {
+    if (!roster.length) { alert('请先在右侧填写学生名单'); return; }
+    var pool = PK.noRepeat ? PK.pool : roster.slice();
+    if (!pool.length) { resetPool(); pool = PK.pool.slice(); }
+    if (!pool.length) return;
+    if (PK.count > pool.length) PK.count = pool.length;
+
+    PK.rolling = true;
+    $('#pickGo').textContent = '停止';
+    var nameEl = $('#pickName');
+    nameEl.className = 'pick-name rolling';
+    var t0 = Date.now(), dur = 1400 + Math.random() * 500;
+    clearInterval(PK.timer);
+    PK.timer = setInterval(function () {
+      nameEl.textContent = roster[Math.floor(Math.random() * roster.length)];
+      if (Date.now() - t0 > dur) stopPick(pool);
+    }, 52);
+  }
+
+  function stopPick(pool) {
+    clearInterval(PK.timer);
+    PK.rolling = false;
+    $('#pickGo').textContent = '开始抽选';
+    pool = pool || (PK.noRepeat ? PK.pool : roster);
+    var wins = pickNames(pool, PK.count);
+    if (!wins.length) return;
+    if (PK.noRepeat) {
+      wins.forEach(function (n) {
+        var i = PK.pool.indexOf(n);
+        if (i >= 0) PK.pool.splice(i, 1);
+      });
+    }
+    PK.wins = wins;
+    PK.hist = PK.hist.concat(wins);
+    var nameEl = $('#pickName');
+    nameEl.className = 'pick-name win';
+    nameEl.textContent = wins[0];
+    if (wins.length > 1) nameEl.textContent = wins.join(' · ');
+    renderWinners();
+    renderPoolInfo();
+    beep(880, 0.08);
+    setTimeout(function () { beep(1180, 0.12); }, 90);
+  }
+
+  $('#pickGo').onclick = function () {
+    if (PK.rolling) { stopPick(); return; }
+    startPick();
+  };
+
+  /* ================================================================
+   *  2. 分组
+   * ================================================================ */
+  var GM = { mode: 'n' };
+  $$('#groupMode .chip').forEach(function (b) {
+    b.onclick = function () {
+      $$('#groupMode .chip').forEach(function (x) { x.classList.remove('on'); });
+      b.classList.add('on');
+      GM.mode = b.getAttribute('data-m');
+      $('#groupUnit').textContent = GM.mode === 'n' ? '组' : '人/组';
+    };
+  });
+  function shuffle(a) {
+    a = a.slice();
+    for (var i = a.length - 1; i > 0; i--) {
+      var j = Math.floor(Math.random() * (i + 1));
+      var t = a[i]; a[i] = a[j]; a[j] = t;
+    }
+    return a;
+  }
+  var lastGroups = [];
+  $('#groupGo').onclick = function () {
+    var v = parseInt($('#groupVal').value, 10);
+    if (!roster.length) { alert('请先在「随机抽人」里填写名单'); return; }
+    if (!v || v < 2) { alert('请输入大于 1 的数字'); return; }
+    var groups = [], i;
+    var people = shuffle(roster);
+    if (GM.mode === 'n') {
+      var n = Math.min(v, people.length);
+      for (i = 0; i < n; i++) groups.push([]);
+      people.forEach(function (p, k) { groups[k % n].push(p); });
+    } else {
+      var size = Math.min(v, people.length);
+      for (i = 0; i < people.length; i += size) groups.push(people.slice(i, i + size));
+    }
+    lastGroups = groups;
+    $('#groupOut').className = '';
+    $('#groupOut').innerHTML = groups.map(function (g, i) {
+      return '<div style="margin-bottom:14px"><div style="font-weight:700;font-size:13.5px;color:#3f3f46;margin-bottom:6px">第 ' +
+        (i + 1) + ' 组 · ' + g.length + ' 人</div><div style="display:flex;gap:6px;flex-wrap:wrap">' +
+        g.map(function (p) { return '<span class="chip">' + esc(p) + '</span>'; }).join('') + '</div></div>';
+    }).join('');
+  };
+  $('#groupCopy').onclick = function () {
+    if (!lastGroups.length) return;
+    var text = lastGroups.map(function (g, i) { return '第' + (i + 1) + '组: ' + g.join('、'); }).join('\n');
+    if (navigator.clipboard) navigator.clipboard.writeText(text).then(function () { alert('已复制分组结果'); });
+    else alert(text);
+  };
+
+  /* ================================================================
+   *  3. 计时 (iOS 滚轮)
+   * ================================================================ */
+  var TM = { total: 300, left: 300, running: false, tick: 0, endAt: 0 };
+  var wheel = null;
+  function fmt(s) {
+    s = Math.max(0, Math.round(s));
+    var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
+    var mm = (m < 10 ? '0' : '') + m, ss = (x < 10 ? '0' : '') + x;
+    return h ? h + ':' + mm + ':' + ss : mm + ':' + ss;
+  }
+  function paintTimer() {
+    var big = $('#timerBig');
+    big.textContent = fmt(TM.left);
+    big.className = 'timer-big' + (TM.left === 0 && TM.total > 0 ? ' done' : (TM.left <= 10 && TM.running ? ' warn' : ''));
+    $('#timerGo').textContent = TM.running ? '暂停' : (TM.left !== TM.total && TM.left > 0 ? '继续' : '开始');
+  }
+  if (window.TimeWheel) {
+    wheel = TimeWheel.mount($('#wheelHost'), {
+      value: TM.total,
+      onChange: function (v) {
+        if (TM.running) return;
+        TM.total = v; TM.left = v; paintTimer();
+      }
+    });
+  } else {
+    $('#wheelHost').innerHTML = '<p class="muted">滚轮组件未加载</p>';
+  }
+
+  function tickTimer() {
+    if (!TM.running) return;
+    var left = Math.max(0, Math.round((TM.endAt - Date.now()) / 1000));
+    if (left !== TM.left) { TM.left = left; paintTimer(); }
+    if (left <= 0) stopTimer(true);
+  }
+  function startTimer() {
+    if (TM.left <= 0) TM.left = TM.total || 60;
+    TM.running = true;
+    TM.endAt = Date.now() + TM.left * 1000;
+    clearInterval(TM.tick);
+    TM.tick = setInterval(tickTimer, 200);
+    if (wheel) wheel.setDisabled(true);
+    paintTimer();
+  }
+  function stopTimer(finished) {
+    TM.running = false;
+    clearInterval(TM.tick);
+    if (wheel) wheel.setDisabled(false);
+    paintTimer();
+    if (finished) {
+      $('#timerNote').textContent = '时间到！';
+      if ($('#timerSound').checked) { beep(660, .18); setTimeout(function () { beep(880, .18); }, 220); setTimeout(function () { beep(1100, .35); }, 460); }
+    }
+  }
+  $('#timerGo').onclick = function () { if (TM.running) stopTimer(false); else startTimer(); };
+  $('#timerZero').onclick = function () {
+    stopTimer(false);
+    TM.total = wheel ? wheel.get() : TM.total;
+    TM.left = TM.total;
+    $('#timerNote').textContent = '拖动或点击滚轮设定时间';
+    paintTimer();
+  };
+  $('#timerFull').onclick = function () {
+    var el = document.documentElement;
+    if (document.fullscreenElement) document.exitFullscreen();
+    else if (el.requestFullscreen) el.requestFullscreen();
+  };
+  paintTimer();
+
+  /* ================================================================
+   *  4. 计分板
+   * ================================================================ */
+  var SCORE_KEY = 'fla_scoreboard';
+  var teams = LS.get(SCORE_KEY, [
+    { name: '第一组', score: 0 }, { name: '第二组', score: 0 },
+    { name: '第三组', score: 0 }, { name: '第四组', score: 0 }
+  ]);
+  function saveTeams() { LS.set(SCORE_KEY, teams); }
+  function renderTeams() {
+    $('#teams').innerHTML = teams.map(function (t, i) {
+      return '<div class="team" data-i="' + i + '">' +
+        '<h4><input value="' + esc(t.name) + '" data-rename="' + i + '" style="width:100%"><span class="muted" data-i="' + i + '">' + (i + 1) + '</span></h4>' +
+        '<div class="score">' + t.score + '</div>' +
+        '<div class="ops">' +
+          '<button class="btn sm" data-add="1" data-i="' + i + '">+1</button>' +
+          '<button class="btn sm" data-add="2" data-i="' + i + '">+2</button>' +
+          '<button class="btn sm" data-add="5" data-i="' + i + '">+5</button>' +
+          '<button class="btn sm" data-add="-1" data-i="' + i + '">−1</button>' +
+        '</div></div>';
+    }).join('');
+    $$('#teams [data-add]').forEach(function (b) {
+      b.onclick = function () {
+        var i = +b.getAttribute('data-i');
+        teams[i].score += +b.getAttribute('data-add');
+        saveTeams(); renderTeams();
+      };
+    });
+    $$('#teams [data-rename]').forEach(function (inp) {
+      inp.oninput = function () {
+        var i = +inp.getAttribute('data-rename');
+        teams[i].name = inp.value.slice(0, 20);
+        saveTeams();
+      };
+    });
+  }
+  $('#scoreAdd').onclick = function () {
+    teams.push({ name: '第' + (teams.length + 1) + '组', score: 0 });
+    saveTeams(); renderTeams();
+  };
+  $('#scoreReset').onclick = function () {
+    teams.forEach(function (t) { t.score = 0; });
+    saveTeams(); renderTeams();
+  };
+  renderTeams();
+
+  /* ================================================================
+   *  5. 表决器
+   * ================================================================ */
+  var VOTE = LS.get('fla_vote', { A: 0, B: 0, C: 0, D: 0, X: 0 });
+  var VOTE_LABEL = { A: '赞成', B: '反对', C: '弃权', D: '选项 D', X: '未表态' };
+  function renderVotes() {
+    var keys = Object.keys(VOTE), max = 1;
+    keys.forEach(function (k) { max = Math.max(max, VOTE[k]); });
+    var total = keys.reduce(function (s, k) { return s + VOTE[k]; }, 0);
+    $('#voteList').innerHTML = keys.map(function (k, i) {
+      return '<div class="vote-row">' +
+        '<div class="vote-key">' + k + '<div class="muted" style="font-size:10.5px">' + (i + 1) + '</div></div>' +
+        '<div class="vote-bar"><i style="width:' + Math.round(VOTE[k] / max * 100) + '%"></i></div>' +
+        '<div class="vote-num">' + VOTE[k] + ' <span class="muted">(' +
+          (total ? Math.round(VOTE[k] / total * 100) : 0) + '%)</span></div>' +
+        '</div>' +
+        '<div class="muted" style="margin:-4px 0 6px 66px;font-size:11.5px">' + VOTE_LABEL[k] + '</div>';
+    }).join('');
+    LS.set('fla_vote', VOTE);
+  }
+  window.addEventListener('keydown', function (e) {
+    if (/INPUT|TEXTAREA|SELECT/.test(document.activeElement && document.activeElement.tagName)) return;
+    var keys = Object.keys(VOTE);
+    if (/^[1-5]$/.test(e.key)) {
+      var k = keys[+e.key - 1];
+      if (k) { VOTE[k]++; renderVotes(); }
+    } else if (e.key === 'r' || e.key === 'R') {
+      keys.forEach(function (k) { VOTE[k] = 0; });
+      renderVotes();
+    }
+  });
+  $('#voteReset').onclick = function () {
+    Object.keys(VOTE).forEach(function (k) { VOTE[k] = 0; });
+    renderVotes();
+  };
+  renderVotes();
+
+  /* ================================================================
+   *  6. 函数图像
+   * ================================================================ */
+  var FX_COLORS = ['#111114', '#dc2626', '#2563eb', '#059669', '#7c3aed', '#d97706'];
+  var FX_KEY = 'fla_functions';
+  var fx = LS.get(FX_KEY, ['sin(x)', 'x^2-4']);
+  var view = { cx: 0, cy: 0, unit: 60 };   /* unit = 每 1 单位像素 */
+
+  function renderFx() {
+    $('#fxList').innerHTML = fx.map(function (f, i) {
+      return '<div class="fx-item"><span class="fx-dot" style="background:' + FX_COLORS[i % 6] + '"></span>' +
+        '<input value="' + esc(f) + '" data-fx="' + i + '" spellcheck="false">' +
+        '<button class="btn sm ghost" data-delfx="' + i + '">×</button></div>';
+    }).join('');
+    $$('#fxList [data-fx]').forEach(function (inp) {
+      inp.oninput = function () {
+        var i = +inp.getAttribute('data-fx');
+        fx[i] = inp.value;
+        LS.set(FX_KEY, fx);
+        drawGraph();
+      };
+    });
+    $$('#fxList [data-delfx]').forEach(function (b) {
+      b.onclick = function () {
+        fx.splice(+b.getAttribute('data-delfx'), 1);
+        LS.set(FX_KEY, fx); renderFx(); drawGraph();
+      };
+    });
+  }
+  $('#fxAdd').onclick = function () { fx.push(''); LS.set(FX_KEY, fx); renderFx(); drawGraph(); };
+  $('#fxFit').onclick = function () { view = { cx: 0, cy: 0, unit: 60 }; $('#xmin').value = -10; $('#xmax').value = 10; drawGraph(); };
+  ['xmin', 'xmax'].forEach(function (id) { $('#' + id).onchange = function () { fitToRange(); drawGraph(); }; });
+
+  /* --- 安全的表达式求值器 (不 eval) --- */
+  function compile(src) {
+    var toks = [], i = 0, s = String(src).replace(/\s+/g, '');
+    if (!s) return null;
+    var FN = { sin: Math.sin, cos: Math.cos, tan: Math.tan, asin: Math.asin, acos: Math.acos,
+      atan: Math.atan, sqrt: Math.sqrt, abs: Math.abs, ln: Math.log, log: Math.log10,
+      exp: Math.exp, floor: Math.floor, ceil: Math.ceil, round: Math.round, sign: Math.sign };
+    while (i < s.length) {
+      var c = s[i];
+      if (/[0-9.]/.test(c)) {
+        var j = i;
+        while (j < s.length && /[0-9.eE]/.test(s[j])) j++;
+        var num = parseFloat(s.slice(i, j));
+        if (!isFinite(num)) return null;
+        toks.push({ t: 'num', v: num }); i = j;
+      } else if (/[a-zA-Z]/.test(c)) {
+        var k = i;
+        while (k < s.length && /[a-zA-Z0-9_]/.test(s[k])) k++;
+        var w = s.slice(i, k).toLowerCase();
+        if (w === 'x') toks.push({ t: 'var' });
+        else if (w === 'pi') toks.push({ t: 'num', v: Math.PI });
+        else if (w === 'e') toks.push({ t: 'num', v: Math.E });
+        else if (FN[w]) toks.push({ t: 'fn', v: w });
+        else return null;
+        i = k;
+      } else if ('+-*/^()'.indexOf(c) >= 0) {
+        toks.push({ t: c }); i++;
+      } else return null;
+    }
+    var p = 0;
+    function peek() { return toks[p] && toks[p].t; }
+    function expr() {
+      var v = term();
+      while (peek() === '+' || peek() === '-') {
+        var op = toks[p++].t, r = term();
+        v = op === '+' ? function (a, b) { return function (x) { return a(x) + b(x); }; }(v, r)
+                       : function (a, b) { return function (x) { return a(x) - b(x); }; }(v, r);
+      }
+      return v;
+    }
+    function term() {
+      var v = power();
+      while (peek() === '*' || peek() === '/') {
+        var op = toks[p++].t, r = power();
+        v = op === '*' ? function (a, b) { return function (x) { return a(x) * b(x); }; }(v, r)
+                       : function (a, b) { return function (x) { return a(x) / b(x); }; }(v, r);
+      }
+      return v;
+    }
+    function power() {
+      var v = unary();
+      if (peek() === '^') {
+        p++;
+        var r = power();
+        return function (a, b) { return function (x) { return Math.pow(a(x), b(x)); }; }(v, r);
+      }
+      return v;
+    }
+    function unary() {
+      if (peek() === '-') { p++; var v = unary(); return function (a) { return function (x) { return -a(x); }; }(v); }
+      if (peek() === '+') { p++; return unary(); }
+      return atom();
+    }
+    function atom() {
+      var tk = toks[p++];
+      if (!tk) return null;
+      if (tk.t === 'num') return function (v) { return function () { return v; }; }(tk.v);
+      if (tk.t === 'var') return function (x) { return x; };
+      if (tk.t === 'fn') {
+        var name = tk.v, inner;
+        if (peek() === '(') { p++; inner = expr(); if (peek() === ')') p++; else return null; }
+        else inner = atom();
+        if (!inner) return null;
+        var f = FN[name];
+        return function (g) { return function (x) { return f(g(x)); }; }(inner);
+      }
+      if (tk.t === '(') { var e = expr(); if (peek() === ')') p++; return e; }
+      return null;
+    }
+    var fn = expr();
+    if (!fn || p !== toks.length) return null;
+    return fn;
+  }
+
+  function fitToRange() {
+    var a = parseFloat($('#xmin').value), b = parseFloat($('#xmax').value);
+    if (!isFinite(a) || !isFinite(b) || b <= a) return;
+    var cv = $('#graph'), W = cv.width;
+    view.unit = W / (b - a);
+    view.cx = (a + b) / 2;
+    view.cy = 0;
+  }
+
+  function drawGraph() {
+    var cv = $('#graph');
+    if (!cv || !cv.getContext) return;
+    var ctx = null;
+    try { ctx = cv.getContext('2d'); } catch (e) { ctx = null; }
+    if (!ctx) return;                       /* 无 canvas 支持的环境直接跳过 */
+    var W = cv.width, H = cv.height, unit = view.unit;
+    ctx.clearRect(0, 0, W, H);
+    ctx.fillStyle = '#fff'; ctx.fillRect(0, 0, W, H);
+    function X(x) { return (x - view.cx) * unit + W / 2; }
+    function Y(y) { return H / 2 - (y - view.cy) * unit; }
+
+    /* 网格 */
+    var step = 1;
+    while (unit * step < 46) step *= 2;
+    while (unit * step > 150) step /= 2;
+    var x0 = view.cx - (W / 2) / unit, x1 = view.cx + (W / 2) / unit;
+    var y0 = view.cy - (H / 2) / unit, y1 = view.cy + (H / 2) / unit;
+    ctx.lineWidth = 1;
+    ctx.strokeStyle = '#eef0f3';
+    for (var gx = Math.ceil(x0 / step) * step; gx <= x1; gx += step) {
+      ctx.beginPath(); ctx.moveTo(X(gx), 0); ctx.lineTo(X(gx), H); ctx.stroke();
+    }
+    for (var gy = Math.ceil(y0 / step) * step; gy <= y1; gy += step) {
+      ctx.beginPath(); ctx.moveTo(0, Y(gy)); ctx.lineTo(W, Y(gy)); ctx.stroke();
+    }
+    /* 坐标轴 */
+    ctx.strokeStyle = '#b6bac2'; ctx.lineWidth = 1.6;
+    ctx.beginPath(); ctx.moveTo(0, Y(0)); ctx.lineTo(W, Y(0)); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(X(0), 0); ctx.lineTo(X(0), H); ctx.stroke();
+    /* 刻度数字 */
+    ctx.fillStyle = '#8b8f98'; ctx.font = '18px -apple-system,sans-serif'; ctx.textAlign = 'center';
+    for (gx = Math.ceil(x0 / step) * step; gx <= x1; gx += step) {
+      if (Math.abs(gx) < step / 2) continue;
+      var s = Math.abs(gx) < 1e-9 ? '0' : (Math.abs(gx) < 1 ? gx.toFixed(1) : String(Math.round(gx * 1000) / 1000));
+      ctx.fillText(s, X(gx), Math.min(H - 6, Math.max(20, Y(0) + 22)));
+    }
+    ctx.textAlign = 'right';
+    for (gy = Math.ceil(y0 / step) * step; gy <= y1; gy += step) {
+      if (Math.abs(gy) < step / 2) continue;
+      ctx.fillText(String(Math.round(gy * 1000) / 1000), Math.min(W - 6, Math.max(30, X(0) - 8)), Y(gy) + 6);
+    }
+
+    /* 曲线 */
+    fx.forEach(function (src, idx) {
+      var f = compile(src);
+      if (!f) return;
+      ctx.strokeStyle = FX_COLORS[idx % 6];
+      ctx.lineWidth = 2.6;
+      ctx.lineJoin = 'round';
+      ctx.beginPath();
+      var started = false, prevY = null;
+      for (var px = 0; px <= W; px += 1) {
+        var xv = view.cx + (px - W / 2) / unit;
+        var yv = f(xv);
+        if (!isFinite(yv)) { started = false; prevY = null; continue; }
+        var py = Y(yv);
+        if (py < -1e6 || py > 1e6) { started = false; prevY = null; continue; }
+        /* 断点(渐近线)处理: 相邻点跳变过大就断开 */
+        if (prevY !== null && Math.abs(py - prevY) > H * 1.6) started = false;
+        if (!started) { ctx.moveTo(px, py); started = true; }
+        else ctx.lineTo(px, py);
+        prevY = py;
+      }
+      ctx.stroke();
+    });
+  }
+
+  /* 拖动平移 / 滚轮缩放 */
+  (function () {
+    var cv = $('#graph');
+    if (!cv) return;
+    var drag = false, sx = 0, sy = 0, ox = 0, oy = 0;
+    cv.addEventListener('mousedown', function (e) {
+      drag = true; sx = e.clientX; sy = e.clientY; ox = view.cx; oy = view.cy;
+    });
+    window.addEventListener('mousemove', function (e) {
+      if (!drag) return;
+      var k = cv.width / cv.clientWidth;
+      view.cx = ox - (e.clientX - sx) * k / view.unit;
+      view.cy = oy + (e.clientY - sy) * k / view.unit;
+      drawGraph();
+    });
+    window.addEventListener('mouseup', function () { drag = false; });
+    cv.addEventListener('wheel', function (e) {
+      e.preventDefault();
+      var f = e.deltaY > 0 ? 1.12 : 0.89;
+      view.unit = Math.max(4, Math.min(4000, view.unit * f));
+      drawGraph();
+    }, { passive: false });
+  })();
+
+  renderFx();
+  drawGraph();
+  window.addEventListener('resize', drawGraph);
+
+  /* ---------------- 提示音 (WebAudio, 无需音频文件) ---------------- */
+  var actx = null;
+  function beep(freq, dur) {
+    try {
+      actx = actx || new (window.AudioContext || window.webkitAudioContext)();
+      var o = actx.createOscillator(), g = actx.createGain();
+      o.type = 'sine'; o.frequency.value = freq;
+      g.gain.setValueAtTime(0.0001, actx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.25, actx.currentTime + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + (dur || 0.15));
+      o.connect(g); g.connect(actx.destination);
+      o.start(); o.stop(actx.currentTime + (dur || 0.15) + 0.02);
+    } catch (e) {}
+  }
+
+  /* ---------------- 全局快捷键 ---------------- */
+  window.addEventListener('keydown', function (e) {
+    var tag = (document.activeElement && document.activeElement.tagName) || '';
+    if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
+    var pickOn = $('#pane-pick').classList.contains('on');
+    var timerOn = $('#pane-timer').classList.contains('on');
+    if (pickOn && e.code === 'Space') { e.preventDefault(); $('#pickGo').click(); }
+    if (timerOn && e.code === 'Space') { e.preventDefault(); $('#timerGo').click(); }
+    if (timerOn && (e.key === 'r' || e.key === 'R')) $('#timerZero').click();
+  });
+
+  window.FLAClassroom = { showTab: showTab, get roster() { return roster; } };
+})();
+</script>
+</body>
+</html>

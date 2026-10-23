@@ -37,11 +37,20 @@ def _install_crash_log():
 
 def main() -> int:
     _install_crash_log()
-    from . import bridge, core
+    from . import bridge, core, single
 
     args = [a for a in sys.argv[1:] if not a.startswith("--")]
     selftest = "--selftest" in sys.argv
     job = core.parse_protocol(args[0]) if args else None
+
+    # 严格单实例: 命名互斥体 (双击 N 次也只留一个进程), 后来者唤醒前一个后立即退出
+    si = single.SingleInstance()
+    if not selftest and not si.acquire():
+        if si.wake_existing(sys.argv[1:]):
+            return 0
+        # 兜底: 可能是没带单实例的老版本在跑, 退回到端口转发
+        if bridge.forward("/api/open", job) if job else bridge.forward("/api/show"):
+            return 0
 
     bridge_ok = selftest or bridge.start()
     if not bridge_ok:
@@ -85,6 +94,21 @@ def main() -> int:
     bridge.bus.control.connect(stage.handle)
     bridge.bus.show_main.connect(win.bring_up)
     win.show()
+
+    def _on_wake(argv):
+        """后来实例唤起时: 显示主窗 + 有课件参数就直接打开"""
+        try:
+            win.bring_up()
+        except Exception:
+            pass
+        try:
+            p = core.parse_protocol(argv[0]) if argv else None
+            if p:
+                win.open_file(p)
+        except Exception:
+            pass
+
+    si.listen(_on_wake)
     if core.cfg.dock_on_start:
         stage.start()
     if job:

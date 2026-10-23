@@ -39,7 +39,7 @@ html, body { margin: 0; padding: 0; background: #fafafa; }
 .boot-err a { border: 1px solid #e4e4e7; color: #18181b; }
 .boot-err .boot-tips { margin: 14px 0 0; font-size: 12px; color: #a1a1aa; line-height: 1.9; }
 </style>
-<link rel="stylesheet" href="style.css?v=149">
+<link rel="stylesheet" href="style.css?v=150">
 </head>
 <body>
 <div id="app"><div class="boot-loading">正在加载 FLA…</div></div>
@@ -72,9 +72,9 @@ html, body { margin: 0; padding: 0; background: #fafafa; }
 /* 弹性加载器: 并行 fetch 所有脚本, 任一连接 8 秒无数据即中断重连 (跨境链路常见"单连接卡死"),
    最多重试 5 次, 全部到齐后按顺序执行, 最后调用 initApp。不支持 fetch 的老浏览器退回普通 script 标签。 */
 (function () {
-  var LIST = ['js/api.js?v=136', 'js/ui.js?v=143', 'js/app.js?v=159',
+  var LIST = ['js/api.js?v=136', 'js/ui.js?v=143', 'js/app.js?v=160',
               'js/admin.js?v=137', 'js/chat.js?v=134', 'js/ai.js?v=140', 'js/remote.js?v=137',
-              'lib/interactjs/interact.min.js?v=1.10.28', 'js/msstage.js?v=139', 'js/viewer.js?v=135'];
+              'lib/interactjs/interact.min.js?v=1.10.28', 'js/timewheel.js?v=1', 'js/msstage.js?v=140', 'js/viewer.js?v=135'];
   var st = window.__flaLoad = { total: LIST.length, done: 0, retries: 0, files: {} };
   function plain() {
     LIST.forEach(function (u) { var s = document.createElement('script'); s.src = u; s.async = false; document.body.appendChild(s); });

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import ctypes
 import os
+import sys
 import threading
 import webbrowser
 
@@ -28,6 +29,28 @@ class _Sig(QObject):
 
 class _ExtensionProgress(QObject):
     changed = pyqtSignal(int, int)
+
+
+def classroom_url(tab: str = "") -> str:
+    """课堂工具页地址: 优先用随程序分发的本地文件 (断网也能用), 否则走服务器"""
+    here = os.path.dirname(os.path.abspath(__file__))
+    for base in (getattr(sys, "_MEIPASS", ""), os.path.join(here, "..", "..", "web"),
+                 os.path.join(here, "..", "..", "..", "web")):
+        if base:
+            p = os.path.join(base, "classroom.html")
+            if os.path.exists(p):
+                u = QUrl.fromLocalFile(os.path.abspath(p))
+                if tab:
+                    u.setFragment(tab)
+                return u.toString()
+    u = QUrl(cfg.server.rstrip("/") + "/classroom.html")
+    if tab:
+        u.setFragment(tab)
+    return u.toString()
+
+
+def open_classroom(tab: str = ""):
+    QDesktopServices.openUrl(QUrl(classroom_url(tab)))
 
 
 def open_web(to: str = ""):
@@ -132,13 +155,15 @@ class HomePage(Page):
         b3.clicked.connect(win.stage.timer.popup)
         b4 = PushButton(FIF.PHONE, "手机投屏 / 观看")
         b4.clicked.connect(lambda: (win.stage.start(), win.stage.handle("phone")))
-        for b in (b1, b4, b2, b3):
+        b5 = PrimaryPushButton(FIF.PEOPLE, "课堂工具")
+        b5.clicked.connect(lambda: open_classroom("pick"))
+        for b in (b1, b5, b4, b2, b3):
             row.addWidget(b)
         row.addStretch(1)
         self.lay.addLayout(row)
         row2 = QHBoxLayout()
         for ic, t, to in ((FIF.LIBRARY, "课件库", "library"), (FIF.EDUCATION, "AI 助教", "ai"),
-                          (FIF.LINK, "实验工具", "experiments"), (FIF.MESSAGE, "聊天", "chat"),
+                          (FIF.EDUCATION, "课堂工具", "experiments"), (FIF.MESSAGE, "聊天", "chat"),
                           (FIF.CHAT, "论坛", "forum"), (FIF.PEOPLE, "个人中心", "profile")):
             b = PushButton(ic, t)
             b.clicked.connect(lambda _=False, to=to: win.switchTo(getattr(win, to)))
@@ -1224,16 +1249,71 @@ class ExperimentResource(CardWidget):
             run_async(lambda: experiment_extensions.uninstall(self.extension_id), done)
 
 
+class ClassroomToolCard(CardWidget):
+    """课堂工具卡片: 点一下就打开对应的工具页"""
+
+    def __init__(self, icon, name, desc, tab, parent=None):
+        super().__init__(parent)
+        h = QHBoxLayout(self)
+        h.setContentsMargins(18, 14, 18, 14)
+        iw = IconWidget(icon)
+        iw.setFixedSize(30, 30)
+        h.addWidget(iw)
+        v = QVBoxLayout()
+        v.setSpacing(3)
+        v.addWidget(StrongBodyLabel(name))
+        d = CaptionLabel(desc)
+        d.setWordWrap(True)
+        d.setTextColor("#666666", "#aaaaaa")
+        v.addWidget(d)
+        h.addLayout(v, 1)
+        b = PrimaryPushButton("打开")
+        b.setFixedWidth(90)
+        b.clicked.connect(lambda: open_classroom(tab))
+        h.addWidget(b)
+
+
 class ExperimentsPage(Page):
-    """按当前系统安装、打开和卸载实验工具；资源保存在 FLA 专用扩展目录。"""
+    """课堂工具 (抽人/计时/分组/计分/表决/函数图像) + 可离线使用的开源实验扩展"""
 
     def __init__(self, win):
-        super().__init__("experiments", "实验扩展", "一键获取可离线使用的开源模拟与桌面实验工具。")
+        super().__init__("experiments", "课堂工具", "上课真正用得上的六件套, 断网也能用; 下方是可选的开源实验扩展。")
         self.win = win
+
+        tools = CardWidget()
+        tl = QVBoxLayout(tools)
+        tl.setContentsMargins(18, 15, 18, 15)
+        tl.setSpacing(8)
+        tl.addWidget(StrongBodyLabel("课堂六件套 · 电脑/平板/手机都能开"))
+        grid = QHBoxLayout()
+        grid.setSpacing(10)
+        left = QVBoxLayout()
+        right = QVBoxLayout()
+        items = [
+            (FIF.PEOPLE, "随机抽人", "滚动抽取, 1/2/3/5 人, 不重复, 抽过的人不再点", "pick"),
+            (FIF.SYNC, "随机分组", "按组数或每组人数一键分好, 可直接复制到群里", "group"),
+            (FIF.STOP_WATCH, "计时器", "iOS 式滚轮拖时/分/秒, 支持 ± 与全屏投影", "timer"),
+            (FIF.CERTIFICATE, "计分板", "分组加减分, 大屏显示, 自动排序", "score"),
+            (FIF.GLOBE, "表决器", "A/B/C/D/弃权, 键盘 1-5 计票, 实时统计", "vote"),
+            (FIF.EDIT, "函数图像", "输入表达式即画图, 拖动平移/滚轮缩放", "graph"),
+        ]
+        for n, (icon, name, desc, tab) in enumerate(items):
+            (left if n % 2 == 0 else right).addWidget(ClassroomToolCard(icon, name, desc, tab, tools))
+        grid.addLayout(left, 1)
+        grid.addLayout(right, 1)
+        tl.addLayout(grid)
+        row = QHBoxLayout()
+        b = PrimaryPushButton(FIF.LINK, "在新窗口打开完整课堂工具页")
+        b.clicked.connect(lambda: open_classroom("pick"))
+        row.addWidget(b)
+        row.addStretch(1)
+        tl.addLayout(row)
+        self.lay.addWidget(tools)
+
         note = CardWidget()
         note_lay = QVBoxLayout(note)
         note_lay.setContentsMargins(18, 15, 18, 15)
-        note_lay.addWidget(StrongBodyLabel("FLA 扩展中心 · " + experiment_extensions.platform_label()))
+        note_lay.addWidget(StrongBodyLabel("开源实验扩展 · " + experiment_extensions.platform_label()))
         note_text = BodyLabel(
             "点击“下载并安装”后，FLA 会在后台按当前系统/处理器选择适配包，校验来源并保存到当前用户的 FLA/Extensions 目录，随后直接打开；"
             "PhET 单文件模拟安装后可离线运行。不会把你带到上游下载页面，也不会静默提权；若系统要求授权，会由操作系统提示并需你确认。原项目署名与许可说明保留；只上架已核验的离线包，尚未核验的在线资源不会冒充一键安装项；卸载只移除 FLA 扩展目录中的内容。"
@@ -1245,6 +1325,308 @@ class ExperimentsPage(Page):
         for item in experiment_extensions.catalog():
             self.lay.addWidget(ExperimentResource(item, self))
         self.lay.addStretch(1)
+
+
+class _SysSig(QObject):
+    line = pyqtSignal(str)
+    finished = pyqtSignal(bool, str)
+
+
+class SystemPage(Page):
+    """系统维护: 希沃全面消杀 + 重启还原 (影子系统)"""
+
+    def __init__(self, win):
+        super().__init__("system", "系统维护", "清理希沃残留; 需要时开启重启还原, 防止学生乱装乱改。")
+        self.win = win
+        self.sig = _SysSig()
+        self.sig.line.connect(self._log)
+        self.sig.finished.connect(self._done)
+
+        # ---------- 希沃消杀 ----------
+        c1 = CardWidget()
+        v1 = QVBoxLayout(c1)
+        v1.setContentsMargins(20, 16, 20, 16)
+        v1.setSpacing(8)
+        v1.addWidget(StrongBodyLabel("希沃全面消杀"))
+        t = BodyLabel("清理希沃白板5 / 希沃管家 / PPT 小工具 的进程、服务、驱动、注册表、计划任务、"
+                      "开机自启、安装目录、PPT 加载项与 COM 组件。删除前自动备份到隔离区, 可还原。")
+        t.setWordWrap(True)
+        v1.addWidget(t)
+        self.purge_force = CheckBox("强制跳过希沃消杀 (仅给影子系统用)")
+        self.purge_force.hide()
+        self.admin_tip = CaptionLabel("")
+        self.admin_tip.setWordWrap(True)
+        self.admin_tip.setTextColor("#c62828", "#ef9a9a")
+        v1.addWidget(self.admin_tip)
+        row1 = QHBoxLayout()
+        self.b_scan = PushButton(FIF.SEARCH, "体检 (只看不改)")
+        self.b_scan.clicked.connect(lambda: self._run_purge(scan_only=True))
+        self.b_purge = PrimaryPushButton(FIF.BROOM, "开始消杀")
+        self.b_purge.clicked.connect(self._confirm_purge)
+        self.b_restore = PushButton(FIF.SYNC, "还原最近一次备份")
+        self.b_restore.clicked.connect(self._restore)
+        self.b_admin = PushButton(FIF.SHIELD, "以管理员身份重启 FLA")
+        self.b_admin.clicked.connect(self._elevate)
+        self.b_admin.hide()
+        row1.addWidget(self.b_scan)
+        row1.addWidget(self.b_purge)
+        row1.addWidget(self.b_restore)
+        row1.addWidget(self.b_admin)
+        row1.addStretch(1)
+        v1.addLayout(row1)
+        self.purge_out = PlainTextEdit()
+        self.purge_out.setReadOnly(True)
+        self.purge_out.setMinimumHeight(170)
+        self.purge_out.setPlaceholderText("点「体检」先看看这台电脑有多少希沃残留…")
+        v1.addWidget(self.purge_out)
+        self.lay.addWidget(c1)
+
+        # ---------- 影子系统 ----------
+        c2 = CardWidget()
+        v2 = QVBoxLayout(c2)
+        v2.setContentsMargins(20, 16, 20, 16)
+        v2.setSpacing(8)
+        v2.addWidget(StrongBodyLabel("重启还原 (影子系统)"))
+        self.shadow_state = BodyLabel("检测中…")
+        self.shadow_state.setWordWrap(True)
+        v2.addWidget(self.shadow_state)
+        self.shadow_detail = CaptionLabel("")
+        self.shadow_detail.setWordWrap(True)
+        self.shadow_detail.setTextColor("#666666", "#aaaaaa")
+        v2.addWidget(self.shadow_detail)
+        op = QHBoxLayout()
+        op.addWidget(CaptionLabel("overlay 容量"))
+        self.overlay = ComboBox()
+        for mb in (1024, 2048, 4096, 8192, 16384):
+            self.overlay.addItem(f"{mb} MB")
+        self.overlay.setCurrentIndex(2)
+        op.addWidget(self.overlay)
+        op.addSpacing(12)
+        self.clean_before = CheckBox("开启前先消杀希沃")
+        self.clean_before.setChecked(True)
+        op.addWidget(self.clean_before)
+        self.skip_clean = CheckBox("强制跳过消杀")
+        self.skip_clean.setChecked(False)
+        op.addWidget(self.skip_clean)
+        op.addStretch(1)
+        v2.addLayout(op)
+        row2 = QHBoxLayout()
+        self.b_shadow_check = PushButton(FIF.SYNC, "重新检测")
+        self.b_shadow_check.clicked.connect(self.refresh_shadow)
+        self.b_shadow_on = PrimaryPushButton(FIF.POWER_BUTTON, "开启重启还原")
+        self.b_shadow_on.clicked.connect(self._confirm_shadow)
+        self.b_shadow_off = PushButton(FIF.CANCEL, "关闭重启还原")
+        self.b_shadow_off.clicked.connect(self._shadow_off)
+        row2.addWidget(self.b_shadow_check)
+        row2.addWidget(self.b_shadow_on)
+        row2.addWidget(self.b_shadow_off)
+        row2.addStretch(1)
+        v2.addLayout(row2)
+        self.shadow_out = PlainTextEdit()
+        self.shadow_out.setReadOnly(True)
+        self.shadow_out.setMinimumHeight(130)
+        v2.addWidget(self.shadow_out)
+        self.lay.addWidget(c2)
+        self.lay.addStretch(1)
+
+        self._busy = False
+        QTimer.singleShot(100, self._check_admin)
+        QTimer.singleShot(200, self.refresh_shadow)
+
+    def _check_admin(self):
+        try:
+            from .purge import is_admin
+            ok = is_admin()
+        except Exception:
+            ok = False
+        if ok:
+            self.admin_tip.setText("")
+        else:
+            self.admin_tip.setText("当前不是管理员: 只能体检, 不能删除服务/驱动/Program Files, 也不能开启影子系统。"
+                                   "请点右侧按钮以管理员身份重启 FLA。")
+            self.b_admin.show()
+
+    def _elevate(self):
+        """以管理员身份重新拉起 FLA (UAC 提权)"""
+        try:
+            import ctypes
+            exe = os.environ.get("FLA_EXE") or ""
+            script = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "fla_desktop.py")
+            if exe:
+                params, target = "", exe
+            else:
+                params, target = '"%s"' % script, sys.executable
+            rc = ctypes.windll.shell32.ShellExecuteW(None, "runas", target, params, None, 1)
+            if rc > 32:
+                QApplication.quit()
+        except Exception as e:
+            InfoBar.error("提权失败", str(e), parent=self)
+
+    # ------------------------------------------------ 公共
+    def _log(self, text):
+        self.purge_out.appendPlainText(text)
+        self.shadow_out.appendPlainText(text)
+
+    def _done(self, ok, msg):
+        self._busy = False
+        for b in (self.b_scan, self.b_purge, self.b_shadow_on, self.b_shadow_off, self.b_restore):
+            b.setEnabled(True)
+        if msg:
+            InfoBar.success("完成", msg, duration=4000, parent=self, position=InfoBarPosition.TOP_RIGHT) \
+                if ok else InfoBar.warning("未完成", msg, duration=6000, parent=self, position=InfoBarPosition.TOP_RIGHT)
+
+    # ------------------------------------------------ 希沃消杀
+    def _confirm_purge(self):
+        if self._busy:
+            return
+        box = MessageBox("确认消杀希沃残留?",
+                         "会结束希沃相关进程、删除服务/驱动/计划任务/注册表/安装目录。\n"
+                         "删除前会自动备份到隔离区, 可在本页还原。\n"
+                         "建议先点「体检」看清楚要删什么。", self)
+        box.yesButton.setText("开始消杀")
+        box.cancelButton.setText("取消")
+        if box.exec():
+            self._run_purge(scan_only=False)
+
+    def _run_purge(self, scan_only: bool):
+        if self._busy:
+            return
+        self._busy = True
+        for b in (self.b_scan, self.b_purge):
+            b.setEnabled(False)
+        self.purge_out.clear()
+        self.purge_out.appendPlainText("正在体检…" if scan_only else "正在消杀 (先备份)…")
+
+        def work():
+            try:
+                from .purge import SeewoPurge
+                from .core import data_dir
+                p = SeewoPurge(data_dir=data_dir(), log=lambda t: self.sig.line.emit(t))
+                r = p.scan()
+                if not r.steps:
+                    self.sig.line.emit("没有发现希沃残留 🎉")
+            except Exception as e:
+                self.sig.finished.emit(False, f"体检失败: {e}")
+                return
+            if scan_only:
+                for st in r.steps:
+                    self.sig.line.emit(f"[{st.kind}] {st.label}" + (f" — {st.detail}" if st.detail else ""))
+                for n in r.notes:
+                    self.sig.line.emit("· " + n)
+                self.sig.finished.emit(True, f"体检完成: {r.summary()}")
+                return
+            try:
+                r = p.purge(backup=True, progress=lambda i, t, label: self.sig.line.emit(f"({i}/{t}) {label}"))
+            except Exception as e:
+                self.sig.finished.emit(False, f"消杀失败: {e}")
+                return
+            bad = [s for s in r.steps if not s.ok]
+            for n in r.notes:
+                self.sig.line.emit("· " + n)
+            self.sig.finished.emit(not bad, f"消杀完成: 成功 {len(r.steps) - len(bad)}/{len(r.steps)} 项")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _restore(self):
+        from .purge import restore, SeewoPurge
+        from .core import data_dir
+        base = os.path.join(data_dir(), "purge")
+        if not os.path.isdir(base):
+            InfoBar.info("没有备份", "本机还没有消杀备份", parent=self)
+            return
+        dirs = sorted(d for d in os.listdir(base) if d.startswith("quarantine-"))
+        if not dirs:
+            InfoBar.info("没有备份", "本机还没有消杀备份", parent=self)
+            return
+        target = os.path.join(base, dirs[-1])
+
+        def work():
+            try:
+                self.sig.line.emit("正在从备份还原: " + target)
+                ok, bad = restore(target, log=lambda t: self.sig.line.emit(t))
+                self.sig.finished.emit(bad == 0, f"还原完成: 成功 {ok}, 失败 {bad}")
+            except Exception as e:
+                self.sig.finished.emit(False, f"还原失败: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    # ------------------------------------------------ 影子系统
+    def refresh_shadow(self):
+        from .shadow import ShadowSystem
+        try:
+            st = ShadowSystem().detect()
+        except Exception as e:
+            self.shadow_state.setText(f"检测失败: {e}")
+            return
+        self.shadow_state.setText(st.summary())
+        detail = []
+        if st.edition or st.product:
+            detail.append(f"{st.product} ({st.edition}, build {st.build})")
+        detail.extend(st.reasons)
+        detail.extend(st.notes)
+        self.shadow_detail.setText("\n".join(detail))
+        on = st.method in ("uwf", "vhd")
+        self.b_shadow_on.setEnabled(on and not self._busy)
+        self.b_shadow_off.setEnabled(bool(st.uwf_enabled) and not self._busy)
+        names = {"uwf": "UWF 统一写入筛选器", "vhd": "VHD 差分盘"}
+        self.shadow_out.clear()
+        self.shadow_out.appendPlainText("方案: " + names.get(st.method, "不可用"))
+
+    def _confirm_shadow(self):
+        if self._busy:
+            return
+        msg = ("开启后, 从下次重启开始: 学生装软件、改设置、删文件, 再重启一次全部还原。\n"
+               "关闭方法: 在非还原状态下点「关闭重启还原」, 或再次运行 FLA。\n")
+        if self.clean_before.isChecked() and not self.skip_clean.isChecked():
+            msg += "将先自动消杀希沃残留 (推荐)。"
+        box = MessageBox("开启重启还原?", msg, self)
+        box.yesButton.setText("开启并重启")
+        box.cancelButton.setText("取消")
+        if not box.exec():
+            return
+        self._busy = True
+        self.b_shadow_on.setEnabled(False)
+        self.shadow_out.appendPlainText("正在开启…")
+
+        def work():
+            try:
+                from .shadow import ShadowSystem
+                s = ShadowSystem(log=lambda t: self.sig.line.emit(t))
+                ok, m, acts = s.enable(
+                    clean_seewo=self.clean_before.isChecked(),
+                    skip_clean=self.skip_clean.isChecked(),
+                    overlay_mb=[1024, 2048, 4096, 8192, 16384][max(0, self.overlay.currentIndex())],
+                    reboot=True)
+                for a in acts:
+                    self.sig.line.emit(("✓ " if a.ok else "✗ ") + a.name)
+                self.sig.finished.emit(ok, m)
+            except Exception as e:
+                self.sig.finished.emit(False, f"开启失败: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def _shadow_off(self):
+        if self._busy:
+            return
+        box = MessageBox("关闭重启还原?", "会先把当前的改动提交进系统盘, 再关闭写保护。", self)
+        box.yesButton.setText("关闭")
+        box.cancelButton.setText("取消")
+        if not box.exec():
+            return
+        self._busy = True
+        self.b_shadow_off.setEnabled(False)
+
+        def work():
+            try:
+                from .shadow import ShadowSystem
+                ok, m, acts = ShadowSystem(log=lambda t: self.sig.line.emit(t)).disable(reboot=True)
+                for a in acts:
+                    self.sig.line.emit(("✓ " if a.ok else "✗ ") + a.name)
+                self.sig.finished.emit(ok, m)
+            except Exception as e:
+                self.sig.finished.emit(False, f"关闭失败: {e}")
+
+        threading.Thread(target=work, daemon=True).start()
 
 
 class SettingsPage(Page):
@@ -1463,6 +1845,7 @@ class MainWindow(FluentWindow):
         self.library = LibraryPage(self)
         self.ai = AIPage(self)
         self.experiments = ExperimentsPage(self)
+        self.system = SystemPage(self)
         self.settings = SettingsPage(self)
         from .social import AnnPage, ChatPage, ForumPage, ProfilePage
         from .adminpage import AdminPage
@@ -1477,12 +1860,13 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.home, FIF.HOME, "首页")
         self.addSubInterface(self.library, FIF.LIBRARY, "课件库")
         self.addSubInterface(self.ai, FIF.EDUCATION, "AI 助教")
-        self.addSubInterface(self.experiments, FIF.LINK, "实验工具")
+        self.addSubInterface(self.experiments, FIF.EDUCATION, "课堂工具")
         self.addSubInterface(self.chat, FIF.MESSAGE, "聊天")
         self.addSubInterface(self.forum, FIF.CHAT, "论坛")
         self.addSubInterface(self.anns, FIF.MEGAPHONE, "公告")
         self.addSubInterface(self.admin, FIF.CERTIFICATE, "管理", NavigationItemPosition.BOTTOM)
         self.navigationInterface.widget(self.admin.objectName()).setVisible(False)
+        self.addSubInterface(self.system, FIF.SHIELD, "系统维护", NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.profile, FIF.PEOPLE, "个人中心", NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.settings, FIF.SETTING, "设置", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setExpandWidth(180)

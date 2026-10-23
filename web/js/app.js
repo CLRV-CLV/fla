@@ -474,6 +474,7 @@ function shell(content, active) {
     (u ? '<a class="' + on('forum') + '" href="#/forum">' + UI.icon('forum', 15) + ' 论坛</a>' : '') +
     (u ? '<a class="' + on('ai') + '" href="#/ai">' + UI.icon('sparkle', 15) + ' AI</a>' : '') +
     (touch ? '<a href="' + castHref + '">' + UI.icon('mobile', 15) + ' 投屏</a>' : '') +
+    (u ? '<a href="/classroom.html" target="_blank" rel="noopener" title="抽人 / 计时 / 分组 / 计分 / 表决 / 函数图像">' + UI.icon('timer', 15) + ' 课堂工具</a>' : '') +
     '<a class="' + on('remote') + '" href="#/remote">' + UI.icon('qr', 15) + ' 遥控</a>' +
     '<a class="' + on('desktop') + '" href="#/desktop">' + UI.icon('laptop', 15) + ' 桌面端</a>' +
     '<a class="' + on('mobile') + '" href="#/mobile">' + UI.icon('mobile', 15) + ' 手机端</a>' +

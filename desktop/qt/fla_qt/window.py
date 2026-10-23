@@ -1471,9 +1471,12 @@ class SystemPage(Page):
         self._busy = False
         for b in (self.b_scan, self.b_purge, self.b_shadow_on, self.b_shadow_off, self.b_restore):
             b.setEnabled(True)
-        if msg:
-            InfoBar.success("完成", msg, duration=4000, parent=self, position=InfoBarPosition.TOP_RIGHT) \
-                if ok else InfoBar.warning("未完成", msg, duration=6000, parent=self, position=InfoBarPosition.TOP_RIGHT)
+        if not msg:
+            return
+        if ok:
+            InfoBar.success("完成", msg, duration=4000, parent=self, position=InfoBarPosition.TOP_RIGHT)
+        else:
+            InfoBar.warning("未完成", msg, duration=6000, parent=self, position=InfoBarPosition.TOP_RIGHT)
 
     # ------------------------------------------------ 希沃消杀
     def _confirm_purge(self):

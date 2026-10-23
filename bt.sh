@@ -261,6 +261,32 @@ case "${1:-status}" in
     curl -s -m 5 "http://127.0.0.1:$PORT/api/health" >/dev/null 2>&1 && echo "健康检查   : ✔ http://127.0.0.1:$PORT/api/health" || echo "健康检查   : ✘ 应用未响应"
     echo -n "转换自检   : "; curl -s -m 20 "http://127.0.0.1:$PORT/api/health/convert" || echo "(接口不可用, 可能版本较旧)"
     echo ""
+    echo "-- 桌面客户端 --"
+    DESKJ=$(curl -s -m 5 "http://127.0.0.1:$PORT/api/desktop/version" 2>/dev/null)
+    if [ -n "$DESKJ" ]; then
+      "$PY_BIN" - "$DESKJ" <<'PYEOF' 2>/dev/null || echo "  (版本接口解析失败)"
+import json, sys
+try:
+    d = json.loads(sys.argv[1])
+except Exception:
+    raise SystemExit(0)
+ver, code = d.get("version"), d.get("code_version")
+size = (d.get("size") or 0) / 1048576.0
+print("下载版本 : %s   (%.1f MB, exe 版本可读=%s)" % (ver, size, "是" if d.get("packaged") else "否"))
+if code and ver and ver != code:
+    print("⚠ 代码版本 %s ≠ exe 打包版本 %s" % (code, ver))
+    print("  官网会显示 %s, 但下载到的 exe 里面仍是 %s —— 客户端『更新』后版本号不会变。" % (code, ver))
+    print("  修: 在开发机执行 bash desktop/qt/build_bundle.sh 重新打包, 提交 desktop/bin/FLA.exe 后")
+    print("      服务器执行 bash bt.sh pull, 再重启应用即可。")
+elif not d.get("packaged"):
+    print("⚠ 读不出 exe 内版本 (旧格式或压缩包损坏), 已退回代码版本显示")
+else:
+    print("✔ exe 与代码版本一致")
+PYEOF
+    else
+      echo "桌面客户端: (版本接口不可用)"
+    fi
+    echo ""
     echo "-- 实测一次转换 (txt → pdf) --"
     if command -v soffice >/dev/null 2>&1 || command -v libreoffice >/dev/null 2>&1; then
       SOF=$(command -v soffice || command -v libreoffice)

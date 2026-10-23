@@ -38,8 +38,19 @@ FLA 桌面助手专为学校多媒体讲台与课堂教学打造，彻底解决�
 双击 `run.bat`，即可自动安装依赖并以开发模式启动桌面助手。
 
 ### 方式 3：重新打包 EXE
-执行 `python desktop/package_exe.py` 或在 Windows 下运行 `build.bat`。
-生成文件：`desktop/dist/FLA.exe`。
+Linux 上交叉打包（推荐，无需 Windows）：
+
+```bash
+bash desktop/qt/build_bundle.sh      # 产物直接写回 desktop/bin/FLA.exe
+git add desktop/bin/FLA.exe && git commit -m "build: FLA.exe 3.6.x" && git push
+```
+
+Windows 上打包：运行 `desktop/build.bat` 或 `python desktop/package_exe.py`，生成 `desktop/dist/FLA.exe`。
+
+> ⚠ **改了 `fla_qt/core.py` 的 `VERSION` 就必须重新打包**。`/api/desktop/version` 现在以
+> **exe 里真实打包的版本** 为准（`server/desktop_dist.py::binary_version`），只改代码没打包时
+> 接口会继续返回旧版本号并在日志里报警，避免"官网说 3.6.0、下载到的还是 3.5.6、更新完版本号不变"
+> 这种死循环。`bash bt.sh doctor` 也会显示 `代码版本 ≠ exe 打包版本`。
 
 ## v3.6.0 新增：课堂工具 / 希沃消杀 / 重启还原 / 严格单实例
 

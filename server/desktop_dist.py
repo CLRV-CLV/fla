@@ -5,7 +5,11 @@ Serves FLA.exe directly without login.
 
 from pathlib import Path
 import base64
+import io
 import os
+import re
+import struct
+import zipfile
 
 DIST_EXE_PATH = Path(__file__).resolve().parent.parent / "desktop" / "bin" / "FLA.exe"
 WEB_DOWNLOADS_PATH = Path(__file__).resolve().parent.parent / "web" / "downloads" / "FLA.exe"
@@ -2651,11 +2655,17 @@ def ensure_desktop_exe() -> Path:
     """返回可下载的 FLA.exe 路径. 正常情况直接用 desktop/bin/FLA.exe (不整读进内存, 新版约 30MB)."""
     try:
         if DIST_EXE_PATH.exists() and DIST_EXE_PATH.stat().st_size > 10000:
-            if not WEB_DOWNLOADS_PATH.exists() or WEB_DOWNLOADS_PATH.stat().st_size != DIST_EXE_PATH.stat().st_size:
+            src_stat = DIST_EXE_PATH.stat()
+            need_copy = True
+            if WEB_DOWNLOADS_PATH.exists():
+                dst_stat = WEB_DOWNLOADS_PATH.stat()
+                need_copy = (dst_stat.st_size != src_stat.st_size or
+                             int(dst_stat.st_mtime) != int(src_stat.st_mtime))
+            if need_copy:
                 try:
                     import shutil
                     WEB_DOWNLOADS_PATH.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copyfile(DIST_EXE_PATH, WEB_DOWNLOADS_PATH)
+                    shutil.copy2(DIST_EXE_PATH, WEB_DOWNLOADS_PATH)   # copy2: 保留 mtime, 下次才不会重复拷 30MB
                 except Exception:
                     pass
             return DIST_EXE_PATH
@@ -2670,3 +2680,112 @@ def ensure_desktop_exe() -> Path:
         except Exception:
             pass
     return DIST_EXE_PATH
+
+# ---------------------------------------------------------------- 版本自检
+# 为什么需要它: /api/desktop/version 以前直接返回代码里写死的 CURRENT_VERSION,
+# 一旦只升了代码却没重新打包 FLA.exe, 官网会显示新版、下载到的还是旧 exe,
+# 客户端"更新"后版本号原地不变, 永远升不上去。现在版本号以 **exe 里真实打包的
+# app/fla_qt/core.py** 为准, 打包落后就自动降级为旧版本号, 不再骗客户端。
+
+TRAILER = b"FLAPAYLD"
+_VER_CACHE: dict = {}
+
+
+class _PayloadFile(io.RawIOBase):
+    """把 [launcher][zip] 结构里的 zip 段伪装成普通文件, 让 zipfile 直接读尾部目录"""
+
+    def __init__(self, path: Path, start: int):
+        self._f = open(path, "rb")
+        self._f.seek(0, os.SEEK_END)
+        self._start = start
+        self._size = max(0, self._f.tell() - start)
+        self._pos = 0
+
+    def readable(self):
+        return True
+
+    def seekable(self):
+        return True
+
+    def tell(self):
+        return self._pos
+
+    def seek(self, off, whence=0):
+        if whence == 0:
+            pos = off
+        elif whence == 1:
+            pos = self._pos + off
+        else:
+            pos = self._size + off
+        self._pos = max(0, min(self._size, pos))
+        return self._pos
+
+    def readinto(self, b):
+        data = self.read(len(b))
+        n = len(data)
+        b[:n] = data
+        return n
+
+    def read(self, n=-1):
+        if n is None or n < 0:
+            n = self._size - self._pos
+        n = max(0, min(n, self._size - self._pos))
+        self._f.seek(self._start + self._pos)
+        data = self._f.read(n)
+        self._pos += len(data)
+        return data
+
+    def close(self):
+        try:
+            self._f.close()
+        finally:
+            super().close()
+
+
+def read_embedded_version(path: Path | str) -> str:
+    """读 FLA.exe 里打包的 ``core.py`` 版本号; 解析失败返回空串"""
+    try:
+        p = Path(path)
+        st = p.stat()
+        key = (str(p), st.st_size, int(st.st_mtime))
+        if key in _VER_CACHE:
+            return _VER_CACHE[key]
+        with open(p, "rb") as f:
+            f.seek(0, os.SEEK_END)
+            size = f.tell()
+            if size < 32:
+                return ""
+            f.seek(size - 16)
+            tail = f.read(16)
+            if tail[8:] != TRAILER:
+                return ""
+            start = struct.unpack("<Q", tail[:8])[0]
+            if not (0 < start < size - 16):
+                return ""
+        with _PayloadFile(p, start) as raw, zipfile.ZipFile(raw) as z:
+            for name in ("app/fla_qt/core.py", "fla_qt/core.py"):
+                try:
+                    text = z.read(name).decode("utf-8", "ignore")
+                except KeyError:
+                    continue
+                m = re.search(r'^VERSION\s*=\s*"([0-9][^"]*)"', text, re.M)
+                if m:
+                    ver = m.group(1).strip()
+                    _VER_CACHE[key] = ver
+                    return ver
+    except Exception:
+        return ""
+    return ""
+
+
+def binary_version() -> str:
+    """当前可分发的 FLA.exe 内真实版本 (未知时返回空串)"""
+    for cand in (DIST_EXE_PATH, WEB_DOWNLOADS_PATH):
+        try:
+            if cand.exists() and cand.stat().st_size > 10000:
+                ver = read_embedded_version(cand)
+                if ver:
+                    return ver
+        except Exception:
+            continue
+    return ""

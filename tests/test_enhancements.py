@@ -54,6 +54,57 @@ def test_desktop_version_and_download():
     assert dl_resp.content.startswith(b"MZ")
     assert len(dl_resp.content) > 300000
 
+def _make_fake_exe(path, version):
+    """造一个 [launcher][zip][8B offset]["FLAPAYLD"] 结构的假 FLA.exe"""
+    import io
+    import struct
+    import zipfile
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w") as z:
+        z.writestr("app/fla_qt/core.py", 'VERSION = "%s"\n' % version)
+    payload = buf.getvalue()
+    launcher = b"MZ" + b"\0" * 11998   # >10000 字节, 与真实 launcher 的体量一致
+    with open(path, "wb") as f:
+        f.write(launcher + payload + struct.pack("<Q", len(launcher)) + b"FLAPAYLD")
+    return path
+
+
+def test_embedded_exe_version_is_readable(tmp_path, monkeypatch):
+    """版本号必须能从 exe 里读出来: 否则「改了代码没重新打包」会骗客户端更新"""
+    from server import desktop_dist as dd
+
+    fake = _make_fake_exe(tmp_path / "FLA.exe", "9.9.9")
+    assert dd.read_embedded_version(fake) == "9.9.9"
+
+    monkeypatch.setattr(dd, "DIST_EXE_PATH", fake)
+    monkeypatch.setattr(dd, "WEB_DOWNLOADS_PATH", tmp_path / "none.exe")
+    assert dd.binary_version() == "9.9.9"
+
+    # 不是 FLA 结构的文件要安全返回空串, 不能抛异常
+    plain = tmp_path / "plain.exe"
+    plain.write_bytes(b"MZ" + b"\0" * 100)
+    assert dd.read_embedded_version(plain) == ""
+
+
+def test_version_endpoint_reports_packaged_exe_version(tmp_path, monkeypatch):
+    """接口版本 = exe 内版本; 打包落后时不能对外宣称新版本"""
+    from server.routers import desktop as router
+
+    exe = _make_fake_exe(tmp_path / "FLA.exe", "3.5.6")
+    monkeypatch.setattr(router, "ensure_desktop_exe", lambda: exe)
+    monkeypatch.setattr(router, "binary_version", lambda: "3.5.6")
+    data = router.get_desktop_version()
+    assert data["version"] == "3.5.6"
+    assert data["code_version"] == router.CURRENT_VERSION
+    assert data["packaged"] is True
+
+    # 读不出 exe 版本时退回代码版本, 至少不能 500
+    monkeypatch.setattr(router, "binary_version", lambda: "")
+    data = router.get_desktop_version()
+    assert data["version"] == router.CURRENT_VERSION
+    assert data["packaged"] is False
+
+
 def test_mobile_app_update_version_matches_gradle():
     response = client.get("/api/app/info")
     assert response.status_code == 200

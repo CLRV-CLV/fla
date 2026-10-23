@@ -4,10 +4,14 @@
 from __future__ import annotations
 
 from pathlib import Path
+import logging
+
 from fastapi import APIRouter
 from fastapi.responses import FileResponse
 
-from server.desktop_dist import ensure_desktop_exe
+from server.desktop_dist import binary_version, ensure_desktop_exe
+
+logger = logging.getLogger("fla.desktop")
 
 router = APIRouter(prefix="/api/desktop", tags=["desktop"])
 
@@ -45,15 +49,26 @@ CHANGELOG = [
 
 @router.get("/version")
 def get_desktop_version():
-    """获取当前最新客户端版本信息及更新说明 (供客户端启动时自动比对自更新)."""
+    """获取当前最新客户端版本信息及更新说明 (供客户端启动时自动比对自更新).
+
+    版本号以 **FLA.exe 里真实打包的版本** 为准, 不是源码里的常量:
+    只改代码没重新打包时, 这里会返回旧版本号, 客户端就不会"更新到自己"死循环。
+    """
     exe_path = ensure_desktop_exe()
     file_size = exe_path.stat().st_size if exe_path.exists() else 0
+    packaged = binary_version()
+    if packaged and packaged != CURRENT_VERSION:
+        logger.warning(
+            "desktop/FLA.exe 打包版本 %s 与代码版本 %s 不一致: 请用 desktop/qt/build_bundle.sh 重新打包后上传",
+            packaged, CURRENT_VERSION)
     return {
         "ok": True,
-        "version": CURRENT_VERSION,
+        "version": packaged or CURRENT_VERSION,
+        "code_version": CURRENT_VERSION,
+        "packaged": bool(packaged),
         "name": "FLA 课堂助手",
         "download_url": "/api/desktop/download",
-        "release_date": "2026-10-12",
+        "release_date": "2026-10-23",
         "size": file_size,
         "changelog": CHANGELOG,
     }
@@ -69,6 +84,7 @@ def download_desktop_exe():
         media_type="application/vnd.microsoft.portable-executable",
         headers={
             "Content-Disposition": 'attachment; filename="FLA.exe"',
-            "Cache-Control": "no-cache, must-revalidate",
+            "Cache-Control": "no-store, must-revalidate",
+            "ETag": '"fla-exe-%s-%s"' % (binary_version() or CURRENT_VERSION, exe_path.stat().st_size),
         },
     )

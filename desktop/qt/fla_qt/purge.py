@@ -634,20 +634,14 @@ class SeewoPurge:
         elif "1060" in out or "does not exist" in out.lower():
             return True, "; ".join(msgs) or "服务不存在"
         else:
-            # 删不掉就让系统重启后删注册表项
-            self._schedule_delete_service_key(name)
-            msgs.append("已安排重启后删除 (" + out.strip()[:80] + ")")
+            # sc delete 失败 (服务仍被占用/标记删除中): 先禁用, 保证重启后不再运行,
+            # 下次再跑消杀就能删掉; 注册表项不是文件, 不能用 PendingFileRenameOperations
+            rc2, out2 = _run(["sc", "config", name, "start=", "disabled"], timeout=15)
+            if rc2 == 0:
+                msgs.append("暂时删不掉, 已设为禁用, 重启后再消杀一次即可删除")
+                return True, "; ".join(msgs)
+            return False, (out.strip() or out2.strip())[:200]
         return True, "; ".join(msgs)
-
-    def _schedule_delete_service_key(self, name: str):
-        try:
-            import winreg
-            full = r"SYSTEM\CurrentControlSet\Services\\" + name
-            p = os.path.join(self._ensure_backup(), "pending-services.txt")
-            with open(p, "a", encoding="utf-8") as f:
-                f.write(full + "\n")
-        except Exception:
-            pass
 
     # ------------------------------------------------------------ 计划任务
     def _delete_task(self, name: str) -> Tuple[bool, str]:
@@ -737,10 +731,11 @@ class SeewoPurge:
                 old, _ = winreg.QueryValueEx(key, "PendingFileRenameOperations")
             except OSError:
                 old = []
-            want = "\0" + path + "\0"
-            cur = list(old or [])
-            if want not in cur:
-                cur.append(want)
+            # 格式: 成对出现 —— 源路径, 目标路径 (空串 = 直接删除)
+            src = path if path.startswith("\\??\\") else "\\??\\" + path
+            cur = [str(x) for x in (old or [])]
+            if src not in cur:
+                cur.extend([src, ""])
             winreg.SetValueEx(key, "PendingFileRenameOperations", 0, winreg.REG_MULTI_SZ, cur)
             key.Close()
             return True

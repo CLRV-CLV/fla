@@ -42,6 +42,20 @@ def _pending_path() -> str:
     return os.path.join(d, "pending.json")
 
 
+
+def _close(k32, h) -> None:
+    """CloseHandle 必须显式声明参数类型, 否则 64 位句柄会被截断成 32 位 (泄漏/误关)"""
+    if not h:
+        return
+    try:
+        from ctypes import wintypes
+        k32.CloseHandle.argtypes = [wintypes.HANDLE]
+        k32.CloseHandle.restype = wintypes.BOOL
+        k32.CloseHandle(h)
+    except Exception:
+        pass
+
+
 class SingleInstance:
     def __init__(self, mutex_name: str = MUTEX_NAME, event_name: str = EVENT_NAME):
         self.mutex_name = mutex_name
@@ -75,10 +89,7 @@ class SingleInstance:
                 self.is_primary = True
                 return True
             if err == ERROR_ALREADY_EXISTS:
-                try:
-                    k32.CloseHandle(h)
-                except Exception:
-                    pass
+                _close(k32, h)
                 self.is_primary = False
                 return False
             self._mutex = h
@@ -118,7 +129,7 @@ class SingleInstance:
             if not ev:
                 return False
             ok = bool(k32.SetEvent(ev))
-            k32.CloseHandle(ev)
+            _close(k32, ev)
             return ok
         except Exception as e:
             logger.debug("唤醒主实例失败: %s", e)
@@ -165,10 +176,9 @@ class SingleInstance:
             self._thread.join(timeout=1.0)
         try:
             import ctypes
-            k32 = ctypes.WinDLL("kernel32")
-            for h in (self._event, self._mutex):
-                if h:
-                    k32.CloseHandle(h)
+            k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+            _close(k32, self._event)
+            _close(k32, self._mutex)
         except Exception:
             pass
         self._event = self._mutex = None

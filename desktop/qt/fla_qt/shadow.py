@@ -34,7 +34,21 @@ from .purge import SeewoPurge, Step as PurgeStep
 IS_WIN = platform.system().lower() == "windows"
 CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0
 
-UWF_EXE = r"C:\Windows\System32\uwfmgr.exe"
+def _uwf_candidates() -> List[str]:
+    """uwfmgr.exe 的位置: 32 位 Python 在 64 位系统上要经 Sysnative 才能访问真正的 System32"""
+    root = os.environ.get("SystemRoot") or os.environ.get("WINDIR") or r"C:\Windows"
+    return [os.path.join(root, "System32", "uwfmgr.exe"),
+            os.path.join(root, "Sysnative", "uwfmgr.exe")]
+
+
+def _uwf_exe() -> str:
+    for p in _uwf_candidates():
+        if os.path.exists(p):
+            return p
+    return _uwf_candidates()[0]
+
+
+UWF_EXE = _uwf_exe()
 SHADOW_DIR = r"C:\FLA\shadow"
 BCD_DESC = "FLA 影子系统 (重启还原)"
 
@@ -137,7 +151,7 @@ class ShadowSystem:
         st.edition = _read_reg(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "EditionID").lower()
         st.product = _read_reg(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "ProductName")
         st.build = _read_reg(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion", "CurrentBuild")
-        st.uwf_exe = os.path.exists(UWF_EXE)
+        st.uwf_exe = any(os.path.exists(p) for p in _uwf_candidates())
 
         edition_ok = any(e in st.edition for e in SUPPORTED_EDITIONS) or \
                      any(k in st.product.lower() for k in ("enterprise", "education", "server", "iot"))

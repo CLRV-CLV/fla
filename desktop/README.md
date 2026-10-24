@@ -47,6 +47,16 @@ git add desktop/bin/FLA.exe && git commit -m "build: FLA.exe 3.6.x" && git push
 
 Windows 上打包：运行 `desktop/build.bat` 或 `python desktop/package_exe.py`，生成 `desktop/dist/FLA.exe`。
 
+> **3.6.0 → 3.6.1 事故复盘**：3.6.0 的 `SystemPage` 用了 `FIF.SHIELD`，而 qfluentwidgets 1.11.3 没有这个图标，
+> `MainWindow.__init__` 直接 `AttributeError`，用户双击毫无反应。现在：① 图标名有回归测试
+> （`desktop/qt/tests/test_icons.py`，不依赖 PyQt）；② `SystemPage` 构造单独 try/except，单个页面出错
+> 不会再拖垮整个主窗口；③ `desktop/qt/tests/test_ui_offscreen.py` 会在 offscreen 下真正 new 出 MainWindow。
+> 改了 UI 之后建议跑一次：
+>
+> ```bash
+> QT_QPA_PLATFORM=offscreen python -m pytest desktop/qt/tests -q
+> ```
+
 > ⚠ **改了 `fla_qt/core.py` 的 `VERSION` 就必须重新打包**。`/api/desktop/version` 现在以
 > **exe 里真实打包的版本** 为准（`server/desktop_dist.py::binary_version`），只改代码没打包时
 > 接口会继续返回旧版本号并在日志里报警，避免"官网说 3.6.0、下载到的还是 3.5.6、更新完版本号不变"

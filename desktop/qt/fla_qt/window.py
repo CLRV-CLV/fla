@@ -1365,7 +1365,7 @@ class SystemPage(Page):
         self.b_purge.clicked.connect(self._confirm_purge)
         self.b_restore = PushButton(FIF.SYNC, "还原最近一次备份")
         self.b_restore.clicked.connect(self._restore)
-        self.b_admin = PushButton(FIF.SHIELD, "以管理员身份重启 FLA")
+        self.b_admin = PushButton(FIF.FINGERPRINT, "以管理员身份重启 FLA")
         self.b_admin.clicked.connect(self._elevate)
         self.b_admin.hide()
         row1.addWidget(self.b_scan)
@@ -1531,7 +1531,7 @@ class SystemPage(Page):
         threading.Thread(target=work, daemon=True).start()
 
     def _restore(self):
-        from .purge import restore, SeewoPurge
+        from .purge import restore
         from .core import data_dir
         base = os.path.join(data_dir(), "purge")
         if not os.path.isdir(base):
@@ -1848,7 +1848,19 @@ class MainWindow(FluentWindow):
         self.library = LibraryPage(self)
         self.ai = AIPage(self)
         self.experiments = ExperimentsPage(self)
-        self.system = SystemPage(self)
+        # 系统维护页最容易受环境差异影响 (管理员检测/图标/COM); 单独兜底,
+        # 绝不让它把整个主窗口带崩 —— 一个页面出问题不该导致双击打不开
+        self.system = None
+        try:
+            self.system = SystemPage(self)
+        except Exception as e:                       # noqa: BLE001
+            import traceback
+            traceback.print_exc()
+            try:
+                with open(os.path.join(core.data_dir(), "error.log"), "a", encoding="utf-8") as f:
+                    f.write("[SystemPage] %s\n" % e)
+            except Exception:
+                pass
         self.settings = SettingsPage(self)
         from .social import AnnPage, ChatPage, ForumPage, ProfilePage
         from .adminpage import AdminPage
@@ -1869,7 +1881,8 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.anns, FIF.MEGAPHONE, "公告")
         self.addSubInterface(self.admin, FIF.CERTIFICATE, "管理", NavigationItemPosition.BOTTOM)
         self.navigationInterface.widget(self.admin.objectName()).setVisible(False)
-        self.addSubInterface(self.system, FIF.SHIELD, "系统维护", NavigationItemPosition.BOTTOM)
+        if self.system is not None:
+            self.addSubInterface(self.system, FIF.BROOM, "系统维护", NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.profile, FIF.PEOPLE, "个人中心", NavigationItemPosition.BOTTOM)
         self.addSubInterface(self.settings, FIF.SETTING, "设置", NavigationItemPosition.BOTTOM)
         self.navigationInterface.setExpandWidth(180)

@@ -46,7 +46,7 @@ def test_desktop_version_and_download():
     assert ver_resp.status_code == 200
     ver_data = ver_resp.json()
     assert ver_data["ok"] is True
-    assert ver_data["version"] == "3.6.0"
+    assert ver_data["version"] == "3.6.1"
 
     # Check download endpoint
     dl_resp = client.get("/api/desktop/download")

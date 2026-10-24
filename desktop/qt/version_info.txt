@@ -5,11 +5,11 @@ VSVersionInfo(
     StringFileInfo([StringTable('080404b0', [
       StringStruct('CompanyName', 'FLA'),
       StringStruct('FileDescription', 'FLA 课堂助手'),
-      StringStruct('FileVersion', '3.6.0'),
+      StringStruct('FileVersion', '3.6.1'),
       StringStruct('InternalName', 'FLA'),
       StringStruct('OriginalFilename', 'FLA.exe'),
       StringStruct('ProductName', 'FLA 课堂助手'),
-      StringStruct('ProductVersion', '3.6.0')])]),
+      StringStruct('ProductVersion', '3.6.1')])]),
     VarFileInfo([VarStruct('Translation', [2052, 1200])])
   ]
 )

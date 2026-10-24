@@ -15,8 +15,9 @@ logger = logging.getLogger("fla.desktop")
 
 router = APIRouter(prefix="/api/desktop", tags=["desktop"])
 
-CURRENT_VERSION = "3.6.0"
+CURRENT_VERSION = "3.6.1"
 CHANGELOG = [
+    "v3.6.1: 修复 v3.6.0 桌面端一启动就闪退 (SystemPage 用了 qfluentwidgets 1.11.3 不存在的图标, 引发 AttributeError); 页面创建改为逐个兜底, 单个页面出错不再拖垮整个主窗口; 增加图标名回归测试",
     "v3.6.0: 新增「课堂工具」(随机抽人/分组/计时/计分/表决/函数图像, 断网可用) 并接入首页与导航; 计时器改为 iOS 式滚轮可拖动/±时·分·秒; 严格单实例(连点图标只唤起已有窗口); 新增希沃全面消杀(进程/服务/驱动/注册表/计划任务/自启/安装目录/PPT加载项/CLSID, 带备份可还原)与重启还原影子系统(UWF 优先, VHD 差分盘备选, 不可用时明确拒绝)",
     "v3.5.6: 修复 Windows 平板触控模式下未标记触控按下事件导致滑动漏判；按显示器物理边界正确换算混合 DPI 坐标，并修复主窗口最大化后的还原位置；AI 输入框统一为 Fluent 风格",
     "v3.5.5: 修复切换分辨率后桌面主窗口越界/尺寸异常；强化 Windows 触屏滑动识别并放行透明批注层下方内容",

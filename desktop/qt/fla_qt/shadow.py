@@ -19,7 +19,6 @@
 """
 from __future__ import annotations
 
-import json
 import os
 import platform
 import re
@@ -29,7 +28,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
-from .purge import SeewoPurge, Step as PurgeStep
+from .purge import SeewoPurge
 
 IS_WIN = platform.system().lower() == "windows"
 CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0

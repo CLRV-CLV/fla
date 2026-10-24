@@ -38,7 +38,7 @@ import subprocess
 import sys
 import time
 from dataclasses import dataclass, field
-from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 IS_WIN = platform.system().lower() == "windows"
 CREATE_NO_WINDOW = 0x08000000 if IS_WIN else 0
@@ -746,7 +746,6 @@ class SeewoPurge:
 # ================================================================= 辅助
 def _delete_reg_tree(hive, path: str) -> Tuple[bool, str]:
     """递归删注册表键 (winreg 没有递归删除)"""
-    import winreg
     try:
         _del_key(hive, path)
         return True, ""

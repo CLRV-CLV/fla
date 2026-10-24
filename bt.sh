@@ -263,25 +263,32 @@ case "${1:-status}" in
     echo ""
     echo "-- 桌面客户端 --"
     DESKJ=$(curl -s -m 5 "http://127.0.0.1:$PORT/api/desktop/version" 2>/dev/null)
+    LOCAL_CODE=$(grep -oP 'CURRENT_VERSION\s*=\s*"\K[^"]+' "$DIR/server/routers/desktop.py" 2>/dev/null | head -1)
     if [ -n "$DESKJ" ]; then
-      "$PY_BIN" - "$DESKJ" <<'PYEOF' 2>/dev/null || echo "  (版本接口解析失败)"
+      "$PY_BIN" - "$DESKJ" "$LOCAL_CODE" <<'PYEOF' 2>/dev/null || echo "  (版本接口解析失败)"
 import json, sys
 try:
     d = json.loads(sys.argv[1])
 except Exception:
     raise SystemExit(0)
 ver, code = d.get("version"), d.get("code_version")
+local = sys.argv[2] if len(sys.argv) > 2 else ""
 size = (d.get("size") or 0) / 1048576.0
 print("下载版本 : %s   (%.1f MB, exe 版本可读=%s)" % (ver, size, "是" if d.get("packaged") else "否"))
-if code and ver and ver != code:
-    print("⚠ 代码版本 %s ≠ exe 打包版本 %s" % (code, ver))
-    print("  官网会显示 %s, 但下载到的 exe 里面仍是 %s —— 客户端『更新』后版本号不会变。" % (code, ver))
-    print("  修: 在开发机执行 bash desktop/qt/build_bundle.sh 重新打包, 提交 desktop/bin/FLA.exe 后")
-    print("      服务器执行 bash bt.sh pull, 再重启应用即可。")
-elif not d.get("packaged"):
+if code and local and code != local:
+    print("⚠ 运行中的服务代码 %s ≠ 磁盘代码 %s：代码已更新，但旧 Python 进程仍在运行。" % (code, local))
+    print("  请到 宝塔 → 网站 → Python项目 → FLA 点击「重启」；命令行 systemctl restart fla 不适用于此模式。")
+if not d.get("packaged"):
     print("⚠ 读不出 exe 内版本 (旧格式或压缩包损坏), 已退回代码版本显示")
-else:
-    print("✔ exe 与代码版本一致")
+elif local and ver and local != ver:
+    print("⚠ 磁盘代码版本 %s ≠ exe 打包版本 %s。" % (local, ver))
+    print("  官网会显示 %s, 但下载到的 exe 里面仍是 %s —— 客户端『更新』后版本号不会变。" % (local, ver))
+    print("  修: 在开发机执行 bash desktop/qt/build_bundle.sh 重新打包, 提交 desktop/bin/FLA.exe 后")
+    print("      服务器执行 bash bt.sh pull, 再在宝塔 Python 项目中重启应用。")
+elif local and ver:
+    print("✔ 磁盘代码与 exe 版本一致")
+if code == local and local == ver:
+    print("✔ 运行代码、磁盘代码与 exe 版本一致")
 PYEOF
     else
       echo "桌面客户端: (版本接口不可用)"
@@ -318,8 +325,18 @@ PYEOF
     fi
     echo "======================================"
     ;;
-  start|stop|restart) systemctl "$1" $SVC; [ "$1" = stop ] || health ;;
-  status) systemctl status $SVC --no-pager -l | head -15; curl -s "http://127.0.0.1:$PORT/api/version"; echo ;;
+  start|stop) systemctl "$1" "$SVC" ;;
+  restart)
+    if systemctl cat "$SVC.service" >/dev/null 2>&1; then
+      systemctl restart "$SVC.service" && health
+    else
+      echo "✘ 未找到 systemd 服务 $SVC.service。"
+      echo "  若使用宝塔 Python 项目模式，请到 宝塔 → 网站 → Python项目 → FLA 点击「重启」。"
+      echo "  旧进程仍在运行时，健康检查可能成功，但不会加载刚更新的 Python 代码。"
+      exit 2
+    fi
+    ;;
+  status) systemctl status "$SVC.service" --no-pager -l | head -15; curl -s "http://127.0.0.1:$PORT/api/version"; echo ;;
   logs) journalctl -u $SVC -n 200 --no-pager ;;
   passwd)
     [ -n "${2:-}" ] || { echo "用法: bash bt.sh passwd 新密码"; exit 1; }

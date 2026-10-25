@@ -314,15 +314,28 @@ def test_web_static_assets_serve():
     assert "FLA" in resp_index.text
     assert "js/app.js?v=160" in resp_index.text
     assert "js/api.js?v=136" in resp_index.text
-    # v1.37 课堂工具: 抽人/计时/分组/计分/表决/函数图像 独立页 + iOS 式滚轮
+    # 放映页仍使用桌面/放映共用的本地滚轮组件。
     assert "js/timewheel.js?v=1" in resp_index.text
     assert "js/msstage.js?v=140" in resp_index.text
 
     resp_classroom = client.get("/classroom.html")
     assert resp_classroom.status_code == 200
-    assert "timewheel.js" in resp_classroom.text
+    assert "/vendor/spin-wheel-5.0.2/spin-wheel-iife.js" in resp_classroom.text
+    assert "/vendor/timepicker-ui-4.6.0/index.js" in resp_classroom.text
+    assert "/vendor/timepicker-ui-4.6.0/plugins/wheel.js" in resp_classroom.text
+    assert "PluginRegistry.register(WheelPlugin)" in resp_classroom.text
+    assert "new window.spinWheel.Wheel" in resp_classroom.text
+    assert "new window.TimepickerUI" in resp_classroom.text
     for tab in ("pick", "group", "timer", "score", "vote", "graph"):
         assert f'data-t="{tab}"' in resp_classroom.text
+    for asset in (
+        "/vendor/spin-wheel-5.0.2/spin-wheel-iife.js",
+        "/vendor/timepicker-ui-4.6.0/index.js",
+        "/vendor/timepicker-ui-4.6.0/plugins/wheel.js",
+        "/vendor/timepicker-ui-4.6.0/main.css",
+        "/vendor/timepicker-ui-4.6.0/theme-m3-green.css",
+    ):
+        assert client.get(asset).status_code == 200
     resp_tw = client.get("/js/timewheel.js")
     assert resp_tw.status_code == 200
     assert "TimeWheel" in resp_tw.text

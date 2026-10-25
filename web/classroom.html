@@ -4,6 +4,8 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
 <title>课堂工具 · FLA</title>
+<link rel="stylesheet" href="/vendor/timepicker-ui-4.6.0/main.css?v=4.6.0">
+<link rel="stylesheet" href="/vendor/timepicker-ui-4.6.0/theme-m3-green.css?v=4.6.0">
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='none' stroke='%23111111' stroke-width='2'%3E%3Crect x='2' y='4' width='20' height='14' rx='2'/%3E%3Cpath d='M8 21h8M12 18v3'/%3E%3C/svg%3E">
 <style>
 /* 自包含样式: 离线可用, 不依赖 style.css */
@@ -56,62 +58,43 @@ input[type=text],input[type=number],textarea,select{
 textarea{resize:vertical;min-height:120px;line-height:1.75}
 label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;margin-bottom:6px}
 
-/* ---------- 抽人 ---------- */
+/* ---------- 抽人：CrazyTim/spin-wheel (MIT) ---------- */
 .pick-stage{
-  position:relative;display:grid;place-items:center;height:230px;border-radius:14px;overflow:hidden;
-  background:radial-gradient(120% 120% at 50% 0%,#fafafa 0%,#f4f4f5 60%,#eeeef1 100%);border:1px solid var(--line)
+  position:relative;display:grid;place-items:center;height:360px;max-width:460px;margin:0 auto;
+  overflow:hidden;border-radius:16px;background:radial-gradient(ellipse at center,#fff 48%,#f4f5f3 100%);
 }
-.pick-name{font-size:62px;font-weight:800;letter-spacing:2px;line-height:1;transition:transform .12s}
+.picker-wheel{width:min(100%,360px);height:100%;touch-action:none}
+.picker-pointer{
+  position:absolute;z-index:2;top:5px;left:50%;transform:translateX(-50%);
+  width:0;height:0;border-left:15px solid transparent;border-right:15px solid transparent;
+  border-top:30px solid #e5484d;filter:drop-shadow(0 2px 2px rgba(0,0,0,.2));pointer-events:none
+}
+.pick-result{text-align:center;min-height:64px;margin-top:6px}
+.pick-name{font-size:30px;font-weight:800;letter-spacing:1px;line-height:1.2;transition:transform .12s}
 .pick-name.rolling{color:#52525b;opacity:.9}
 .pick-name.win{animation:pop .5s cubic-bezier(.2,1.3,.4,1)}
 @keyframes pop{0%{transform:scale(.7);opacity:.4}60%{transform:scale(1.12)}100%{transform:scale(1)}}
-.pick-sub{margin-top:10px;font-size:12.5px;color:var(--mut)}
+.pick-sub{margin-top:6px;font-size:12.5px;color:var(--mut)}
 .pick-hist{display:flex;flex-wrap:wrap;gap:6px;margin-top:12px}
 .pick-hist span{background:#f4f4f5;border-radius:999px;padding:4px 10px;font-size:12px;color:var(--ink2)}
 .winners{display:flex;gap:8px;flex-wrap:wrap;justify-content:center;margin-top:14px}
 .winners b{background:#111114;color:#fff;border-radius:12px;padding:8px 16px;font-size:20px}
 
-/* ---------- 计时 ---------- */
-.timer-stage{display:grid;place-items:center;gap:4px;padding:6px 0 2px}
-.timer-big{font-size:78px;font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:1px;line-height:1.05}
+/* ---------- 计时：开源 timepicker-ui + 单调时钟倒计时 ---------- */
+.timer-stage{display:grid;place-items:center;gap:10px;padding:8px 0 2px}
+.timer-big{font-size:clamp(64px,10vw,92px);font-weight:800;font-variant-numeric:tabular-nums;letter-spacing:1px;line-height:1.05}
 .timer-big.warn{color:var(--warn)}
 .timer-big.done{color:var(--err);animation:blink 1s steps(2,start) infinite}
 @keyframes blink{50%{opacity:.35}}
-.timer-note{font-size:12.5px;color:var(--mut)}
-/* 滚轮 */
-.tw-wrap{user-select:none;-webkit-user-select:none}
-.tw-cols{display:flex;align-items:flex-start;justify-content:center;gap:6px}
-.tw-seg{display:flex;align-items:center;gap:2px;background:#fff;border:1px solid var(--line);border-radius:14px;padding:4px 2px}
-.tw-col{position:relative;outline:none}
-.tw-col:focus-visible .tw-colbody{box-shadow:0 0 0 3px rgba(17,17,20,.12);border-radius:12px}
-.tw-colbody{position:relative;width:76px;overflow:hidden;border-radius:12px;cursor:grab}
-.tw-col.tw-grabbing .tw-colbody{cursor:grabbing}
-.tw-strip{position:absolute;left:0;right:0;top:50%;will-change:transform}
-.tw-item{
-  text-align:center;font-size:26px;font-weight:700;color:var(--ink);
-  font-variant-numeric:tabular-nums;transition:transform .08s linear;transform-origin:center center
-}
-.tw-item.tw-on{color:#111114}
-.tw-band{
-  position:absolute;left:4px;right:4px;top:50%;height:44px;margin-top:-22px;border-radius:10px;
-  background:rgba(17,17,20,.045);pointer-events:none
-}
-.tw-fade{position:absolute;left:0;right:0;height:44px;pointer-events:none}
-.tw-fade-top{top:0;background:linear-gradient(#fff,rgba(255,255,255,0))}
-.tw-fade-bot{bottom:0;background:linear-gradient(rgba(255,255,255,0),#fff)}
-.tw-label{text-align:center;font-size:11.5px;color:var(--mut);font-weight:600;margin-top:2px}
-.tw-side{display:flex;flex-direction:column;gap:4px;padding-right:2px}
-.tw-side button{
-  width:30px;height:30px;border-radius:9px;border:1px solid var(--line);background:#fff;
-  font-size:16px;font-weight:700;line-height:1;color:var(--ink2);display:grid;place-items:center
-}
-.tw-side button:active{background:#f4f4f5;transform:scale(.96)}
-.tw-disabled,.tw-locked{opacity:.5}
-.tw-locked .tw-colbody{cursor:not-allowed}
-.tw-quick{display:flex;gap:6px;flex-wrap:wrap;justify-content:center;margin-top:12px}
-.tw-quick button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:6px 13px;font-size:12.5px;font-weight:600;color:var(--ink2)}
-.tw-quick button:hover{background:#fafafa}
-.tw-quick .tw-zero{color:var(--err);border-color:#fecaca}
+.timer-note{font-size:13px;color:var(--mut);min-height:20px}
+.timer-set{display:grid;gap:8px;justify-items:center;margin-top:16px}
+.timer-set input{max-width:190px;text-align:center;font-size:22px;font-weight:750;font-variant-numeric:tabular-nums;letter-spacing:1px;cursor:pointer}
+.timer-presets{display:flex;gap:7px;flex-wrap:wrap;justify-content:center;margin-top:10px}
+.timer-presets button{border:1px solid var(--line);background:#fff;border-radius:999px;padding:7px 13px;font-size:12.5px;font-weight:650;color:var(--ink2)}
+.timer-presets button:hover{background:#f5f7f4}
+.timer-presets button:disabled{opacity:.45;cursor:not-allowed}
+.timer-set input:disabled{opacity:.55;cursor:not-allowed}
+.pick-sub:empty{display:none}
 
 /* ---------- 计分 / 表决 ---------- */
 .teams{display:grid;grid-template-columns:repeat(auto-fit,minmax(190px,1fr));gap:12px}
@@ -163,10 +146,15 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
     <div class="grid2">
       <div class="card">
         <div class="pick-stage">
+          <div class="picker-pointer" aria-hidden="true"></div>
+          <div id="pickerWheel" class="picker-wheel" aria-label="随机抽人转盘"></div>
+        </div>
+        <div class="pick-result">
           <div id="pickName" class="pick-name">准备就绪</div>
+          <div id="pickSub" class="pick-sub"></div>
         </div>
         <div class="row" style="margin-top:14px;justify-content:center">
-          <button class="btn primary" id="pickGo" style="min-width:150px;font-size:15px;padding:12px 22px">开始抽选</button>
+          <button class="btn primary" id="pickGo" style="min-width:150px;font-size:15px;padding:12px 22px">转动转盘</button>
           <button class="btn" id="pickResetPool">重置候选池</button>
         </div>
         <div class="row" style="margin-top:12px;justify-content:center">
@@ -196,7 +184,7 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
           </label>
           <span class="muted" id="rosterInfo"></span>
         </div>
-        <p class="hint">名单只保存在本机浏览器里，不会上传。支持 <span class="kbd">空格</span> 开始/停止抽选。</p>
+        <p class="hint">名单只保存在本机浏览器里，不会上传。按 <span class="kbd">空格</span> 触发转盘抽选。</p>
       </div>
     </div>
   </section>
@@ -230,11 +218,11 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
       <div class="card">
         <div class="timer-stage">
           <div class="timer-big" id="timerBig">05:00</div>
-          <div class="timer-note" id="timerNote">拖动或点击滚轮设定时间</div>
+          <div class="timer-note" id="timerNote">时长已设定，准备开始</div>
         </div>
         <div class="row" style="margin-top:14px;justify-content:center">
           <button class="btn primary" id="timerGo" style="min-width:120px">开始</button>
-          <button class="btn" id="timerZero">归零</button>
+            <button class="btn" id="timerZero">重置</button>
           <button class="btn" id="timerFull">全屏显示</button>
           <label class="muted" style="display:flex;gap:6px;align-items:center">
             <input type="checkbox" id="timerSound" checked> 结束提示音
@@ -243,8 +231,20 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
         <p class="hint" style="text-align:center">快捷键：<span class="kbd">空格</span> 开始/暂停 · <span class="kbd">R</span> 归零</p>
       </div>
       <div class="card">
-        <div id="wheelHost"></div>
-        <p class="hint">像 iOS 一样：手指/鼠标上下拖动数字，或点右侧 <b>+ −</b>；秒列默认为 ±10 秒，按住 <span class="kbd">Shift</span> 为 ±1 秒。计时进行中滚轮会被锁定，先「归零」再改。</p>
+        <div class="timer-set">
+          <label class="field" for="timerPickerInput">倒计时时长</label>
+          <input id="timerPickerInput" type="text" value="00:05:00" readonly aria-label="选择倒计时时长">
+          <button class="btn" id="timerEdit">设置时长</button>
+        </div>
+        <div class="timer-presets" id="timerPresets" aria-label="常用时长">
+          <button type="button" data-seconds="60">1 分钟</button>
+          <button type="button" data-seconds="180">3 分钟</button>
+          <button type="button" data-seconds="300">5 分钟</button>
+          <button type="button" data-seconds="600">10 分钟</button>
+          <button type="button" data-seconds="1500">25 分钟</button>
+          <button type="button" data-seconds="2700">45 分钟</button>
+        </div>
+        <p class="hint">时长选择采用开源 timepicker-ui（MIT）；预设可一键切换，也可打开时钟面板精确设置时、分、秒。</p>
       </div>
     </div>
   </section>
@@ -302,7 +302,14 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
   </section>
 </div>
 
-<script src="js/timewheel.js?v=1"></script>
+<script src="/vendor/spin-wheel-5.0.2/spin-wheel-iife.js?v=5.0.2"></script>
+<script type="module">
+  import { TimepickerUI, PluginRegistry } from '/vendor/timepicker-ui-4.6.0/index.js';
+  import { WheelPlugin } from '/vendor/timepicker-ui-4.6.0/plugins/wheel.js';
+  PluginRegistry.register(WheelPlugin);
+  window.TimepickerUI = TimepickerUI;
+  window.dispatchEvent(new Event('fla-timepicker-ready'));
+</script>
 <script>
 (function () {
   'use strict';
@@ -319,6 +326,7 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
     $$('.tabs button').forEach(function (b) { b.classList.toggle('on', b.getAttribute('data-t') === t); });
     $$('.pane').forEach(function (p) { p.classList.toggle('on', p.id === 'pane-' + t); });
     if (t === 'graph') drawGraph();
+    if (t === 'pick' && pickerWheel && pickerWheel.resize) setTimeout(function () { pickerWheel.resize(); }, 50);
   }
   $$('.tabs button').forEach(function (b) {
     b.onclick = function () {
@@ -359,6 +367,7 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
     return out;
   }
   function saveRoster(list) {
+    if (typeof PK !== 'undefined' && PK.rolling) { alert('抽选进行中，请等转盘停止后再修改名单'); return; }
     roster = list.slice();
     LS.set(ROSTER_KEY, roster);
     $('#roster').value = roster.join('\n');
@@ -390,33 +399,58 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
    *  1. 抽人
    * ================================================================ */
   var PK = {
-    pool: [],            /* 未抽到的人 */
-    count: 1,
-    noRepeat: true,
-    rolling: false,
-    timer: 0,
-    wins: [],
-    hist: []
+    pool: [], count: 1, noRepeat: true, rolling: false,
+    wins: [], hist: [], pending: [], currentItems: []
   };
-  function resetPool() { PK.pool = roster.slice(); PK.wins = []; renderWinners(); renderPoolInfo(); }
+  var pickerWheel = null;
+  var wheelColors = ['#286d49','#7b9b3a','#d28d21','#c95d45','#536c9c','#8463a5','#249b9b','#aa586f'];
+
+  function wheelItems(names) {
+    return names.map(function (name, i) {
+      return { label: name, backgroundColor: wheelColors[i % wheelColors.length], labelColor: '#fff', value: name };
+    });
+  }
+  function updateWheel() {
+    var names = PK.noRepeat ? PK.pool : roster;
+    if (!names.length) names = ['本轮已抽完'];
+    if (!window.spinWheel || !window.spinWheel.Wheel) return;
+    var props = {
+      items: wheelItems(names),
+      itemBackgroundColors: wheelColors,
+      itemLabelColors: ['#fff'],
+      itemLabelFont: 'Arial, "Microsoft YaHei", sans-serif',
+      itemLabelFontSizeMax: 26,
+      itemLabelRadius: .82,
+      itemLabelAlign: 'right',
+      itemLabelStrokeColor: 'rgba(0,0,0,.2)',
+      itemLabelStrokeWidth: 1,
+      pointerAngle: 0,
+      isInteractive: false,
+      rotationResistance: -45
+    };
+    if (!pickerWheel) pickerWheel = new window.spinWheel.Wheel($('#pickerWheel'), props);
+    else {
+      pickerWheel.items = props.items;
+      pickerWheel.rotation = 0;
+      if (pickerWheel.resize) pickerWheel.resize();
+    }
+  }
+  function resetPool() {
+    if (PK.rolling) return;
+    PK.pool = roster.slice(); PK.wins = []; PK.pending = [];
+    renderWinners(); renderPoolInfo(); updateWheel();
+  }
   function renderPoolInfo() {
-    var sub = document.getElementById('pickSub');
-    if (sub) sub.textContent = '候选 ' + PK.pool.length + ' / ' + roster.length + ' 人';
+    var sub = $('#pickSub');
+    if (sub) sub.textContent = '候选 ' + (PK.noRepeat ? PK.pool.length : roster.length) + ' / ' + roster.length + ' 人';
   }
   function renderWinners() {
     var box = $('#pickWinners');
     if (!box) return;
     box.innerHTML = PK.wins.map(function (n) { return '<b>' + esc(n) + '</b>'; }).join('');
     var hist = $('#pickHist');
-    if (hist) {
-      hist.innerHTML = PK.hist.slice(-12).map(function (n) { return '<span>' + esc(n) + '</span>'; }).join('');
-    }
+    if (hist) hist.innerHTML = PK.hist.slice(-12).map(function (n) { return '<span>' + esc(n) + '</span>'; }).join('');
   }
-  var stageEl = $('.pick-stage');
-  var subEl = document.createElement('div');
-  subEl.className = 'pick-sub'; subEl.id = 'pickSub';
-  stageEl.appendChild(subEl);
-
   $$('#pickCount .chip').forEach(function (b) {
     b.onclick = function () {
       $$('#pickCount .chip').forEach(function (x) { x.classList.remove('on'); });
@@ -424,67 +458,85 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
       PK.count = parseInt(b.getAttribute('data-c'), 10) || 1;
     };
   });
-  $('#pickNoRepeat').onchange = function () { PK.noRepeat = this.checked; if (!this.checked) resetPool(); };
+  $('#pickNoRepeat').onchange = function () { PK.noRepeat = this.checked; resetPool(); };
   $('#pickResetPool').onclick = resetPool;
 
-  function pickNames(pool, n) {
+  function secureIndex(max) {
+    if (window.crypto && window.crypto.getRandomValues && max > 0) {
+      var limit = Math.floor(4294967296 / max) * max, word;
+      do { word = new Uint32Array(1); window.crypto.getRandomValues(word); } while (word[0] >= limit);
+      return word[0] % max;
+    }
+    return Math.floor(Math.random() * max);
+  }
+  function pickNames(pool, n, withoutReplacement) {
     var copy = pool.slice(), out = [];
-    n = Math.min(n, copy.length);
+    n = Math.min(n, withoutReplacement ? copy.length : n);
     for (var i = 0; i < n; i++) {
-      var j = Math.floor(Math.random() * copy.length);
-      out.push(copy.splice(j, 1)[0]);
+      if (withoutReplacement) out.push(copy.splice(secureIndex(copy.length), 1)[0]);
+      else out.push(pool[secureIndex(pool.length)]);
     }
     return out;
   }
-
+  function spinNext() {
+    if (!PK.pending.length) {
+      PK.rolling = false;
+      $('#pickGo').disabled = false;
+      $('#pickGo').textContent = '再抽一次';
+      $('#pickResetPool').disabled = false;
+      $$('#pickCount .chip').forEach(function (b) { b.disabled = false; });
+      $('#pickNoRepeat').disabled = false;
+      $('#pickName').className = 'pick-name win';
+      $('#pickName').textContent = PK.wins.join(' · ');
+      PK.hist = PK.hist.concat(PK.wins);
+      renderWinners(); renderPoolInfo();
+      beep(880, 0.08); setTimeout(function () { beep(1180, 0.12); }, 90);
+      return;
+    }
+    var candidates = PK.noRepeat ? PK.pool : roster;
+    if (!candidates.length) { PK.pending = []; spinNext(); return; }
+    var planned = PK.pending.shift();
+    var index = candidates.indexOf(planned);
+    if (index < 0) { PK.pending.unshift(planned); return; }
+    PK.currentItems = candidates.slice();
+    $('#pickName').className = 'pick-name rolling';
+    $('#pickName').textContent = '轉盤抽選中…';
+    pickerWheel.onRest = function (event) {
+      var winner = PK.currentItems[event.currentIndex] || planned;
+      pickerWheel.onRest = null;
+      PK.wins.push(winner);
+      if (PK.noRepeat) {
+        var i = PK.pool.indexOf(winner);
+        if (i >= 0) PK.pool.splice(i, 1);
+      }
+      renderWinners(); renderPoolInfo();
+      updateWheel();
+      if (PK.pending.length) setTimeout(spinNext, 250);
+      else spinNext();
+    };
+    pickerWheel.spinToItem(index, 2600, true, 6, 1);
+  }
   function startPick() {
     if (!roster.length) { alert('请先在右侧填写学生名单'); return; }
     var pool = PK.noRepeat ? PK.pool : roster.slice();
     if (!pool.length) { resetPool(); pool = PK.pool.slice(); }
     if (!pool.length) return;
     if (PK.count > pool.length) PK.count = pool.length;
-
+    if (!pickerWheel) updateWheel();
+    if (!pickerWheel) { alert('转盘组件加载失败，请刷新页面后重试'); return; }
+    PK.pending = pickNames(pool, PK.count, PK.noRepeat);
+    PK.wins = [];
     PK.rolling = true;
-    $('#pickGo').textContent = '停止';
-    var nameEl = $('#pickName');
-    nameEl.className = 'pick-name rolling';
-    var t0 = Date.now(), dur = 1400 + Math.random() * 500;
-    clearInterval(PK.timer);
-    PK.timer = setInterval(function () {
-      nameEl.textContent = roster[Math.floor(Math.random() * roster.length)];
-      if (Date.now() - t0 > dur) stopPick(pool);
-    }, 52);
+    $('#pickGo').disabled = true;
+    $('#pickGo').textContent = '转盘旋转中…';
+    $('#pickResetPool').disabled = true;
+    $$('#pickCount .chip').forEach(function (b) { b.disabled = true; });
+    $('#pickNoRepeat').disabled = true;
+    spinNext();
   }
-
-  function stopPick(pool) {
-    clearInterval(PK.timer);
-    PK.rolling = false;
-    $('#pickGo').textContent = '开始抽选';
-    pool = pool || (PK.noRepeat ? PK.pool : roster);
-    var wins = pickNames(pool, PK.count);
-    if (!wins.length) return;
-    if (PK.noRepeat) {
-      wins.forEach(function (n) {
-        var i = PK.pool.indexOf(n);
-        if (i >= 0) PK.pool.splice(i, 1);
-      });
-    }
-    PK.wins = wins;
-    PK.hist = PK.hist.concat(wins);
-    var nameEl = $('#pickName');
-    nameEl.className = 'pick-name win';
-    nameEl.textContent = wins[0];
-    if (wins.length > 1) nameEl.textContent = wins.join(' · ');
-    renderWinners();
-    renderPoolInfo();
-    beep(880, 0.08);
-    setTimeout(function () { beep(1180, 0.12); }, 90);
-  }
-
-  $('#pickGo').onclick = function () {
-    if (PK.rolling) { stopPick(); return; }
-    startPick();
-  };
+  $('#pickGo').onclick = startPick;
+  PK.pool = roster.slice();
+  updateWheel(); renderPoolInfo();
 
   /* ================================================================
    *  2. 分组
@@ -537,37 +589,67 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
   };
 
   /* ================================================================
-   *  3. 计时 (iOS 滚轮)
+   *  3. 计时 (timepicker-ui MIT; 倒计时用 deadline 避免 setInterval 漂移)
    * ================================================================ */
   var TM = { total: 300, left: 300, running: false, tick: 0, endAt: 0 };
-  var wheel = null;
   function fmt(s) {
     s = Math.max(0, Math.round(s));
     var h = Math.floor(s / 3600), m = Math.floor((s % 3600) / 60), x = s % 60;
-    var mm = (m < 10 ? '0' : '') + m, ss = (x < 10 ? '0' : '') + x;
-    return h ? h + ':' + mm + ':' + ss : mm + ':' + ss;
+    var hh = (h < 10 ? '0' : '') + h, mm = (m < 10 ? '0' : '') + m, ss = (x < 10 ? '0' : '') + x;
+    return hh + ':' + mm + ':' + ss;
+  }
+  function durationSeconds(value) {
+    var p = String(value || '').split(':').map(function (x) { return parseInt(x, 10) || 0; });
+    if (p.length === 2) p.unshift(0);
+    if (p.length !== 3) return 0;
+    return Math.max(0, Math.min(86399, p[0] * 3600 + p[1] * 60 + p[2]));
+  }
+  function setDuration(seconds) {
+    if (TM.running) return;
+    TM.total = Math.max(1, Math.min(86399, Math.round(seconds)));
+    TM.left = TM.total;
+    $('#timerPickerInput').value = fmt(TM.total);
+    $('#timerNote').textContent = '已设置时长，可开始倒计时';
+    if (timerPicker) timerPicker.setValue(fmt(TM.total));
+    paintTimer();
   }
   function paintTimer() {
     var big = $('#timerBig');
     big.textContent = fmt(TM.left);
     big.className = 'timer-big' + (TM.left === 0 && TM.total > 0 ? ' done' : (TM.left <= 10 && TM.running ? ' warn' : ''));
     $('#timerGo').textContent = TM.running ? '暂停' : (TM.left !== TM.total && TM.left > 0 ? '继续' : '开始');
+    $('#timerPickerInput').disabled = TM.running;
+    $('#timerEdit').disabled = TM.running;
+    $$('#timerPresets button').forEach(function (b) { b.disabled = TM.running; });
   }
-  if (window.TimeWheel) {
-    wheel = TimeWheel.mount($('#wheelHost'), {
-      value: TM.total,
-      onChange: function (v) {
-        if (TM.running) return;
-        TM.total = v; TM.left = v; paintTimer();
-      }
+  var timerPicker = null;
+  function initTimerPicker() {
+    if (!window.TimepickerUI || timerPicker) return;
+    timerPicker = new window.TimepickerUI($('#timerPickerInput'), {
+      clock: { type: '24h', showSeconds: true, incrementHours: 1, incrementMinutes: 1, incrementSeconds: 1 },
+      ui: { theme: 'm3-green', mode: 'wheel', animation: true, backdrop: true },
+      wheel: { hideFooter: false },
+      labels: { time: '设置倒计时时长', ok: '确定', cancel: '取消', hourLabel: '小时', minuteLabel: '分钟', second: '秒' },
+      behavior: { focusTrap: true },
+      callbacks: { onConfirm: function () {
+        var v = timerPicker.getValue();
+        setDuration((parseInt(v.hour, 10) || 0) * 3600 + (parseInt(v.minutes, 10) || 0) * 60 + (parseInt(v.seconds, 10) || 0));
+      } }
     });
-  } else {
-    $('#wheelHost').innerHTML = '<p class="muted">滚轮组件未加载</p>';
+    timerPicker.create();
   }
-
+  if (window.TimepickerUI) initTimerPicker();
+  else window.addEventListener('fla-timepicker-ready', initTimerPicker, { once: true });
+  $('#timerEdit').onclick = function () {
+    if (timerPicker && !TM.running) timerPicker.open();
+    else if (!timerPicker) $('#timerNote').textContent = '时长选择器正在加载，请稍候';
+  };
+  $$('#timerPresets button').forEach(function (b) {
+    b.onclick = function () { setDuration(parseInt(b.getAttribute('data-seconds'), 10) || 300); };
+  });
   function tickTimer() {
     if (!TM.running) return;
-    var left = Math.max(0, Math.round((TM.endAt - Date.now()) / 1000));
+    var left = Math.max(0, Math.ceil((TM.endAt - Date.now()) / 1000));
     if (left !== TM.left) { TM.left = left; paintTimer(); }
     if (left <= 0) stopTimer(true);
   }
@@ -576,26 +658,24 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
     TM.running = true;
     TM.endAt = Date.now() + TM.left * 1000;
     clearInterval(TM.tick);
-    TM.tick = setInterval(tickTimer, 200);
-    if (wheel) wheel.setDisabled(true);
+    TM.tick = setInterval(tickTimer, 100);
+    $('#timerNote').textContent = '倒计时进行中';
     paintTimer();
   }
   function stopTimer(finished) {
     TM.running = false;
     clearInterval(TM.tick);
-    if (wheel) wheel.setDisabled(false);
     paintTimer();
     if (finished) {
       $('#timerNote').textContent = '时间到！';
       if ($('#timerSound').checked) { beep(660, .18); setTimeout(function () { beep(880, .18); }, 220); setTimeout(function () { beep(1100, .35); }, 460); }
-    }
+    } else if (TM.left > 0) $('#timerNote').textContent = '已暂停';
   }
   $('#timerGo').onclick = function () { if (TM.running) stopTimer(false); else startTimer(); };
   $('#timerZero').onclick = function () {
     stopTimer(false);
-    TM.total = wheel ? wheel.get() : TM.total;
     TM.left = TM.total;
-    $('#timerNote').textContent = '拖动或点击滚轮设定时间';
+    $('#timerNote').textContent = '已重置';
     paintTimer();
   };
   $('#timerFull').onclick = function () {
@@ -928,7 +1008,7 @@ label.field{display:block;font-size:12.5px;color:var(--mut);font-weight:600;marg
   /* ---------------- 全局快捷键 ---------------- */
   window.addEventListener('keydown', function (e) {
     var tag = (document.activeElement && document.activeElement.tagName) || '';
-    if (/INPUT|TEXTAREA|SELECT/.test(tag)) return;
+    if (/INPUT|TEXTAREA|SELECT|BUTTON/.test(tag)) return;
     var pickOn = $('#pane-pick').classList.contains('on');
     var timerOn = $('#pane-timer').classList.contains('on');
     if (pickOn && e.code === 'Space') { e.preventDefault(); $('#pickGo').click(); }

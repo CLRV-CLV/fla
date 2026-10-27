@@ -31,26 +31,10 @@ class _ExtensionProgress(QObject):
     changed = pyqtSignal(int, int)
 
 
-def classroom_url(tab: str = "") -> str:
-    """课堂工具页地址: 优先用随程序分发的本地文件 (断网也能用), 否则走服务器"""
-    here = os.path.dirname(os.path.abspath(__file__))
-    for base in (getattr(sys, "_MEIPASS", ""), os.path.join(here, "..", "..", "web"),
-                 os.path.join(here, "..", "..", "..", "web")):
-        if base:
-            p = os.path.join(base, "classroom.html")
-            if os.path.exists(p):
-                u = QUrl.fromLocalFile(os.path.abspath(p))
-                if tab:
-                    u.setFragment(tab)
-                return u.toString()
-    u = QUrl(cfg.server.rstrip("/") + "/classroom.html")
-    if tab:
-        u.setFragment(tab)
-    return u.toString()
-
-
-def open_classroom(tab: str = ""):
-    QDesktopServices.openUrl(QUrl(classroom_url(tab)))
+def open_classroom(tab: str = "", parent=None):
+    """打开桌面原生课堂工具窗口；不访问网页、不依赖服务器或浏览器。"""
+    from .classroom import open_classroom as open_native_classroom
+    return open_native_classroom(tab, parent)
 
 
 def open_web(to: str = ""):
@@ -156,7 +140,7 @@ class HomePage(Page):
         b4 = PushButton(FIF.PHONE, "手机投屏 / 观看")
         b4.clicked.connect(lambda: (win.stage.start(), win.stage.handle("phone")))
         b5 = PrimaryPushButton(FIF.PEOPLE, "课堂工具")
-        b5.clicked.connect(lambda: open_classroom("pick"))
+        b5.clicked.connect(lambda: open_classroom("pick", win))
         for b in (b1, b5, b4, b2, b3):
             row.addWidget(b)
         row.addStretch(1)
@@ -1269,7 +1253,7 @@ class ClassroomToolCard(CardWidget):
         h.addLayout(v, 1)
         b = PrimaryPushButton("打开")
         b.setFixedWidth(90)
-        b.clicked.connect(lambda: open_classroom(tab))
+        b.clicked.connect(lambda: open_classroom(tab, self.window()))
         h.addWidget(b)
 
 
@@ -1277,25 +1261,25 @@ class ExperimentsPage(Page):
     """课堂工具 (抽人/计时/分组/计分/表决/函数图像) + 可离线使用的开源实验扩展"""
 
     def __init__(self, win):
-        super().__init__("experiments", "课堂工具", "上课真正用得上的六件套, 断网也能用; 下方是可选的开源实验扩展。")
+        super().__init__("experiments", "课堂工具", "桌面端原生 Qt 工具，独立于网页与服务器；断网可用。下方另有可选的开源实验扩展。")
         self.win = win
 
         tools = CardWidget()
         tl = QVBoxLayout(tools)
         tl.setContentsMargins(18, 15, 18, 15)
         tl.setSpacing(8)
-        tl.addWidget(StrongBodyLabel("课堂六件套 · 电脑/平板/手机都能开"))
+        tl.addWidget(StrongBodyLabel("课堂六件套 · FLA 桌面原生工具"))
         grid = QHBoxLayout()
         grid.setSpacing(10)
         left = QVBoxLayout()
         right = QVBoxLayout()
         items = [
-            (FIF.PEOPLE, "随机抽人", "滚动抽取, 1/2/3/5 人, 不重复, 抽过的人不再点", "pick"),
-            (FIF.SYNC, "随机分组", "按组数或每组人数一键分好, 可直接复制到群里", "group"),
-            (FIF.STOP_WATCH, "计时器", "iOS 式滚轮拖时/分/秒, 支持 ± 与全屏投影", "timer"),
-            (FIF.CERTIFICATE, "计分板", "分组加减分, 大屏显示, 自动排序", "score"),
-            (FIF.GLOBE, "表决器", "A/B/C/D/弃权, 键盘 1-5 计票, 实时统计", "vote"),
-            (FIF.EDIT, "函数图像", "输入表达式即画图, 拖动平移/滚轮缩放", "graph"),
+            (FIF.PEOPLE, "随机抽人", "本地名单、多人抽取、不重复候选池与抽取记录", "pick"),
+            (FIF.SYNC, "随机分组", "按组数或每组人数分配，结果一键复制", "group"),
+            (FIF.STOP_WATCH, "计时器", "原生时分秒滚轮、快捷预设、暂停与全屏投影", "timer"),
+            (FIF.CERTIFICATE, "计分板", "多组实时加减分，课堂大屏可见", "score"),
+            (FIF.GLOBE, "表决器", "本机实时计票，支持五个选项", "vote"),
+            (FIF.EDIT, "函数图像", "笛卡尔/隐式/不等式/极坐标/参数曲线，含滑块、根与交点", "graph"),
         ]
         for n, (icon, name, desc, tab) in enumerate(items):
             (left if n % 2 == 0 else right).addWidget(ClassroomToolCard(icon, name, desc, tab, tools))
@@ -1303,8 +1287,8 @@ class ExperimentsPage(Page):
         grid.addLayout(right, 1)
         tl.addLayout(grid)
         row = QHBoxLayout()
-        b = PrimaryPushButton(FIF.LINK, "在新窗口打开完整课堂工具页")
-        b.clicked.connect(lambda: open_classroom("pick"))
+        b = PrimaryPushButton(FIF.LINK, "打开独立课堂工具（本地）")
+        b.clicked.connect(lambda: open_classroom("pick", win))
         row.addWidget(b)
         row.addStretch(1)
         tl.addLayout(row)

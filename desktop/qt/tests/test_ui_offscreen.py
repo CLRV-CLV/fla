@@ -102,3 +102,45 @@ def test_timer_wheel_paints(main_window):
     tm.wheel.resize(300, 210)
     tm.wheel.repaint()
     tm.repaint()
+
+
+def test_native_classroom_and_graph(app):
+    """课堂工具必须由 Qt 本地窗口承载；函数图画布可绘制并计算根/交点。"""
+    from PyQt5.QtGui import QImage
+    from fla_qt.classroom import GraphCanvas, parse_plot
+    from fla_qt.window import open_classroom
+
+    window = open_classroom("graph")
+    app.processEvents()
+    assert window.tabs.count() == 6
+    assert window.isVisible()
+    assert window.tabs.tabText(5) == "函数图像"
+    graph = window.graph
+    graph.rows[0][1].setText("y=a*sin(x)")
+    app.processEvents()
+    assert graph.sliders.count() == 1, "表达式参数应自动生成滑块"
+    for text, kind in (
+        ("y=sin(x)", "explicit"),
+        ("x^2+y^2=25", "implicit"),
+        ("y<=x^2", "explicit"),
+        ("r=1+cos(theta)", "polar"),
+        ("(cos(t),sin(2t))", "parametric"),
+        ("(2,3)", "point"),
+    ):
+        assert parse_plot(text).kind == kind
+    with pytest.raises((ValueError, SyntaxError)):
+        parse_plot("__import__('os').system('whoami')")
+
+    canvas = GraphCanvas()
+    canvas.resize(640, 480)
+    canvas.setExpressions([
+        ("y=x^2-4", True), ("y=2x", True), ("x^2+y^2=25", True),
+        ("y<=x^2", True), ("r=1+cos(theta)", True),
+        ("(cos(t),sin(2t))", True), ("(2,3)", True),
+    ])
+    image = QImage(canvas.size(), QImage.Format_ARGB32)
+    canvas.render(image)
+    assert not image.isNull()
+    assert any(label == "根" for _, _, label, _ in canvas._analysis)
+    assert any(label == "交点" for _, _, label, _ in canvas._analysis)
+    window.close()
